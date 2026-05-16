@@ -71,31 +71,37 @@ python3 -m book_workbench.cli run-skill \
   --annotation AN-041
 ```
 
-Open the local app against a temporary copy:
+Open the local app in empty workspace mode:
 
 ```bash
-tmpdir="$(mktemp -d)"
-cp -R manuscript_runtime_codex_appserver_v2/sample_project "$tmpdir/sample_project"
+workspace="$(mktemp -d)"
 python3 -m book_workbench.cli serve \
-  --project "$tmpdir/sample_project" \
+  --workspace "$workspace" \
   --skills-root manuscript_runtime_codex_appserver_v2/skills \
   --port 8765 \
   --open
 ```
 
-Then use the browser buttons to:
+The app starts on a project list and does not preload a demo novel. Use “新建项目” to open the modal, create a project, then click its card to enter the manuscript workbench. Direct project mode is still supported with `--project` when you intentionally want to open an existing project immediately.
 
-1. run `revise-with-annotations`
-2. preview the unified diff
-3. apply the validated patch
-4. inspect the audit trail
+Once a project is open, use the browser buttons to:
+
+1. add annotations into `.bookai/annotations.jsonl` without polluting chapter text
+2. run `revise-with-annotations`
+3. preview the unified diff
+4. apply the validated patch and Git checkpoint
+5. inspect the audit trail
 
 The same operations are available through JSON endpoints:
 
-- `GET /api/health` — local app, Runtime, and Codex app-server initialize health
+- `GET /api/health` — local app, Runtime, workspace, and Codex app-server initialize health
+- `GET /api/workspace`
+- `GET /api/projects`
+- `POST /api/projects/open`
 - `GET /api/project`
 - `GET /api/chapters/<url-encoded chapters/path.md>`
 - `GET /api/annotations`
+- `POST /api/annotations/create`
 - `POST /api/skills/run`
 - `POST /api/patch/preview`
 - `POST /api/patch/apply`
@@ -117,7 +123,6 @@ python3 -m book_workbench.cli create-project \
   --opening-text "清晨六点，邮差把一封没有寄件人的信放在门缝里。"
 
 python3 -m book_workbench.cli serve \
-  --project "$workspace/new-book-demo" \
   --workspace "$workspace" \
   --port 8765 \
   --open
@@ -173,6 +178,8 @@ Validation rejects:
 - reviewed chapters unless `--allow-reviewed` is used and each change sets `requiresSecondaryApproval: true`
 - unknown files or block IDs
 - `beforeHash` mismatch
+- source annotation `selectedText` drift, which forces annotation remap instead of silently editing a wrong block
+- direct Codex/app-server file-change approvals for manuscript files, metadata, locked chapters, and reviewed chapters unless mediated by Runtime tools
 - duplicate/conflicting changes to the same block
 - `afterText` containing `mw:block` anchors
 - non-empty `afterText` on `delete_block`
@@ -180,11 +187,12 @@ Validation rejects:
 ## Tests
 
 ```bash
-python3 -m compileall -q book_workbench tests
+python3 -m compileall -q book_workbench tests scripts
 python3 -m unittest discover -s tests -v
+python3 scripts/browser_e2e.py
 ```
 
-Current suite covers project loading, annotation/rule/skill/runtime flows, patch validation, malformed proposal rejection, symlink target rejection, diff/apply operations, CLI smoke, audit rejection, and Git wrapper no-op behavior.
+Current suite covers project loading, empty workspace startup, new-project modal/list/open flow, annotation sidecar writes, annotation/rule/skill/runtime flows, patch validation, malformed proposal rejection, malicious annotation handling, Codex file-change approval policy, symlink target rejection, diff/apply operations, Git checkpointing, concurrent stale patch rejection, CLI smoke, and browser E2E.
 
 ## GitHub remote
 

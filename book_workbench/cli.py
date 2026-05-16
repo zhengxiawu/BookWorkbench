@@ -130,6 +130,9 @@ def cmd_codex_health(args: argparse.Namespace) -> int:
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
+    if args.project is None and args.workspace is None:
+        parser_workspace_error = "serve requires --workspace for empty workspace mode or --project for direct project mode"
+        raise ValueError(parser_workspace_error)
     serve(
         args.project,
         workspace_root=args.workspace,
@@ -239,8 +242,8 @@ def build_parser() -> argparse.ArgumentParser:
     codex_health.set_defaults(func=cmd_codex_health)
 
     serve_cmd = sub.add_parser("serve", help="Start the local browser app")
-    _add_project_arg(serve_cmd)
-    serve_cmd.add_argument("--workspace", help="Workspace root for creating new projects; defaults to project parent")
+    serve_cmd.add_argument("--project", help="Open this project immediately; omit for empty workspace mode")
+    serve_cmd.add_argument("--workspace", help="Workspace root for listing/creating projects; required when --project is omitted")
     serve_cmd.add_argument("--skills-root")
     serve_cmd.add_argument("--host", default="127.0.0.1")
     serve_cmd.add_argument("--port", type=int, default=8765)
@@ -251,11 +254,11 @@ def build_parser() -> argparse.ArgumentParser:
     create_project.add_argument("--workspace", required=True)
     create_project.add_argument("--title", required=True)
     create_project.add_argument("--slug")
-    create_project.add_argument("--genre", default="长篇小说")
-    create_project.add_argument("--premise", default="一个人在新的压力下重新确认自己的选择。")
-    create_project.add_argument("--style", default="冷静、具体，优先使用动作和场景压力表现人物变化。")
+    create_project.add_argument("--genre", default="")
+    create_project.add_argument("--premise", default="")
+    create_project.add_argument("--style", default="")
     create_project.add_argument("--chapter-title", default="第一章")
-    create_project.add_argument("--opening-text", default="雨停后，街道像刚被人擦掉一层旧梦。")
+    create_project.add_argument("--opening-text", default="")
     create_project.set_defaults(func=cmd_create_project)
 
     return parser

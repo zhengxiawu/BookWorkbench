@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from book_workbench.app_server import create_server
+from tests.test_fixtures import write_black_rain_fixture
 
 SAMPLE = ROOT / "manuscript_runtime_codex_appserver_v2" / "sample_project"
 SKILLS = ROOT / "manuscript_runtime_codex_appserver_v2" / "skills"
@@ -37,6 +38,92 @@ class FakeCodexClient:
             "notifications": [],
             "durationMs": 1,
         }
+
+
+
+class WorkspaceModeAppServerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.tmp.name) / "workspace"
+        self.workspace.mkdir()
+        self.server = create_server(
+            None,
+            workspace_root=self.workspace,
+            builtin_skills_root=SKILLS,
+            port=0,
+            codex_client=FakeCodexClient(),
+            local_token="test-token",
+            quiet=True,
+        )
+        host, port = self.server.server_address[:2]
+        self.base_url = f"http://{host}:{port}"
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+        self.tmp.cleanup()
+
+    def get(self, path: str) -> object:
+        with urllib.request.urlopen(self.base_url + path, timeout=5) as response:
+            body = response.read()
+            content_type = response.headers.get("Content-Type", "")
+        if "application/json" in content_type:
+            return json.loads(body.decode("utf-8"))
+        return body.decode("utf-8")
+
+    def post(self, path: str, payload: dict) -> dict:
+        data = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            self.base_url + path,
+            data=data,
+            method="POST",
+            headers={"Content-Type": "application/json", "X-BookWorkbench-Token": "test-token"},
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def test_empty_workspace_index_has_no_demo_book_and_has_new_project_modal(self) -> None:
+        html = self.get("/")
+        health = self.get("/api/health")
+        projects = self.get("/api/projects")
+
+        self.assertIn("还没有书稿项目", html)
+        self.assertIn('data-testid="new-project-modal"', html)
+        self.assertNotIn("黑雨之后", html)
+        self.assertNotIn("正在连接本地 Runtime", html)
+        self.assertEqual(health["runtime"]["ok"], False)
+        self.assertEqual(health["runtime"]["reason"], "no_project_open")
+        self.assertEqual(projects["projects"], [])
+
+    def test_create_project_lists_then_open_project(self) -> None:
+        created = self.post(
+            "/api/projects/create",
+            {"title": "我的第一本书", "slug": "my-first-book", "openingText": ""},
+        )
+        projects = self.get("/api/projects")
+        opened = self.post("/api/projects/open", {"relativePath": "my-first-book"})
+        project = self.get("/api/project")
+        chapter = self.get("/api/chapters/" + urllib.parse.quote("chapters/ch01.md", safe=""))
+
+        self.assertEqual(created["summary"]["title"], "我的第一本书")
+        self.assertEqual([item["relativePath"] for item in projects["projects"]], ["my-first-book"])
+        self.assertTrue(opened["project"]["open"] if "open" in opened["project"] else True)
+        self.assertEqual(project["open"], True)
+        self.assertIn("chapters/ch01.md", project["blocks"])
+        self.assertEqual(chapter["blocks"]["ch01-p001"]["text"], "")
+
+    def test_existing_fixture_can_be_opened_from_project_list(self) -> None:
+        write_black_rain_fixture(self.workspace / "black-rain-after")
+        projects = self.get("/api/projects")
+        opened = self.post("/api/projects/open", {"relativePath": "black-rain-after"})
+        annotations = self.get("/api/annotations?include_resolved=1")
+
+        self.assertEqual(projects["projects"][0]["title"], "黑雨之后")
+        self.assertIn("chapters/ch05.md", opened["project"]["blocks"])
+        self.assertEqual({item["id"] for item in annotations["annotations"]}, {"AN-041", "AN-999"})
 
 
 class AppServerTests(unittest.TestCase):

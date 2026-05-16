@@ -59,7 +59,8 @@ def validate_patch(context: ProjectContext, patch: object, *, allow_reviewed: bo
             )
         )
 
-    known_annotation_ids = {annotation.id for annotation in context.annotations}
+    annotation_by_id = {annotation.id: annotation for annotation in context.annotations}
+    known_annotation_ids = set(annotation_by_id)
     for annotation_id in source_annotations:
         if not isinstance(annotation_id, str):
             issues.append(_validation_issue("invalid_source_annotation", f"Source annotation must be a string: {annotation_id!r}"))
@@ -67,6 +68,17 @@ def validate_patch(context: ProjectContext, patch: object, *, allow_reviewed: bo
         if annotation_id.startswith("USER-") or annotation_id in known_annotation_ids:
             continue
         issues.append(_validation_issue("unknown_source_annotation", f"Unknown source annotation: {annotation_id}"))
+
+    rules_used = patch.get("rulesUsed", patch.get("rules_used", []))
+    if rules_used is None:
+        rules_used = []
+    if not isinstance(rules_used, list):
+        issues.append(_validation_issue("invalid_rules_used", "rulesUsed must be an array when provided."))
+        rules_used = []
+    known_rule_ids = {rule.id for rule in context.rules}
+    for rule_id in rules_used:
+        if not isinstance(rule_id, str) or rule_id not in known_rule_ids:
+            issues.append(_validation_issue("unknown_rule", f"Unknown rule referenced by PatchProposal: {rule_id!r}"))
 
     changes = patch.get("changes", [])
     if not isinstance(changes, list) or not changes:
@@ -174,6 +186,24 @@ def validate_patch(context: ProjectContext, patch: object, *, allow_reviewed: bo
                     f"{prefix} beforeHash {before_hash!r} does not match current block hash {block.before_hash!r}.",
                 )
             )
+        for source_id in source_annotations:
+            annotation = annotation_by_id.get(source_id) if isinstance(source_id, str) else None
+            if annotation is None or annotation.file != file_path or annotation.block_id != block_id:
+                continue
+            if annotation.before_hash and annotation.before_hash != block.before_hash:
+                issues.append(
+                    _validation_issue(
+                        "hash_mismatch",
+                        f"{prefix} source annotation {annotation.id} beforeHash {annotation.before_hash!r} does not match current block hash {block.before_hash!r}.",
+                    )
+                )
+            if annotation.selected_text and annotation.selected_text not in block.text:
+                issues.append(
+                    _validation_issue(
+                        "hash_mismatch",
+                        f"{prefix} source annotation {annotation.id} selectedText no longer appears in {file_path}#{block_id}; annotation remap is required.",
+                    )
+                )
         if operation == "delete_block" and after_text:
             issues.append(_validation_issue("delete_after_text", f"{prefix} delete_block must use empty afterText."))
         if operation in INSERT_OPERATIONS and not str(after_text).strip():
@@ -195,6 +225,7 @@ def validate_patch(context: ProjectContext, patch: object, *, allow_reviewed: bo
                 )
             )
 
+
     return ValidationResult(
         valid=not any(issue.severity == "error" for issue in issues),
         issues=issues,
@@ -207,6 +238,14 @@ def _short_text_hash(text: str, *, length: int = 8) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:length]
 
 
+def _normalized_text_hash(text: str, *, length: int = 6) -> str:
+    return _short_text_hash(text.strip(), length=length)
+
+
+def current_block_hash(text: str) -> str:
+    return f"sha256:{_normalized_text_hash(text, length=6)}"
+
+
 def generated_insert_block_id(target_block_id: str, after_text: str) -> str:
     return f"{target_block_id}-ins-{_short_text_hash(after_text)}"
 
@@ -214,6 +253,10 @@ def generated_insert_block_id(target_block_id: str, after_text: str) -> str:
 def generated_insert_anchor(target_block_id: str, after_text: str) -> str:
     block_id = generated_insert_block_id(target_block_id, after_text)
     return f"<!-- mw:block id={block_id} hash=sha256:{_short_text_hash(after_text, length=6)} -->"
+
+
+def replacement_anchor(block_id: str, after_text: str) -> str:
+    return f"<!-- mw:block id={block_id} hash={current_block_hash(after_text)} -->"
 
 
 def _replacement_lines(anchor: str, after_text: str, *, trailing_blank: bool = False) -> List[str]:
@@ -231,7 +274,12 @@ def _apply_change_to_lines(context: ProjectContext, lines: List[str], change: Di
     original_had_trailing_blank = end > start and lines[end - 1] == ""
     operation = change["operation"]
     after_text = change.get("afterText", "")
-    anchor = generated_insert_anchor(block.id, after_text) if operation in INSERT_OPERATIONS else block.anchor
+    if operation in INSERT_OPERATIONS:
+        anchor = generated_insert_anchor(block.id, after_text)
+    elif operation == "replace_block":
+        anchor = replacement_anchor(block.id, after_text)
+    else:
+        anchor = block.anchor
     replacement = _replacement_lines(
         anchor,
         after_text,
@@ -330,7 +378,7 @@ def make_annotation_patch(context: ProjectContext, annotation_id: str) -> Dict:
                 "file": annotation.file,
                 "targetBlockId": annotation.block_id,
                 "operation": "replace_block",
-                "beforeHash": block.before_hash,
+                "beforeHash": annotation.before_hash or block.before_hash,
                 "afterText": after_text,
                 "reason": "回应批注要求，避免直接解释内心，改用可见动作表现沉默与压力。",
                 "requiresSecondaryApproval": status == "reviewed",

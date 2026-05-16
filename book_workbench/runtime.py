@@ -8,6 +8,7 @@ from typing import Dict, Iterable, List, Optional
 
 from .annotation_engine import annotation_to_dict, classification_summary, open_annotations
 from .audit import AuditLog, utc_now
+from .git_service import GitError, commit_all, ensure_repo
 from .patch_engine import apply_patch, make_annotation_patch, preview_diff, validate_patch
 from .project import load_project
 from .rule_engine import applicable_rules, propose_rules_from_annotations, rule_to_dict
@@ -139,15 +140,28 @@ class RuntimeOrchestrator:
             "valid": result.valid,
             "issues": [issue.__dict__ for issue in result.issues],
         }
+        commit_error = None
         if result.valid:
             files = self._patch_files(patch)
             self._audit({"type": "patch.applied", "patchId": self._patch_id(patch), "files": files})
+            try:
+                ensure_repo(self.project_root)
+                commit_all(
+                    self.project_root,
+                    self._commit_message(patch, files),
+                )
+            except GitError as exc:
+                commit_error = str(exc)
+                self._audit({"type": "git.commit_skipped", "patchId": self._patch_id(patch), "reason": commit_error})
+            else:
+                self._audit({"type": "git.committed", "patchId": self._patch_id(patch), "files": files})
             self._reload_context()
         else:
             self._audit({"type": "patch.rejected", "patchId": self._patch_id(patch), "issues": validation["issues"]})
         return {
             "validation": validation,
             "applied": result.valid,
+            "commitError": commit_error,
         }
 
     def _select_annotations(
@@ -162,16 +176,113 @@ class RuntimeOrchestrator:
             annotations = [item for item in annotations if item.id in wanted]
         return annotations
 
+    def _commit_message(self, patch: object, files: List[str]) -> str:
+        patch_id = self._patch_id(patch) or "runtime-patch"
+        sources: List[str] = []
+        rules: List[str] = []
+        if isinstance(patch, dict):
+            sources = [str(item) for item in patch.get("sourceAnnotations", []) if isinstance(item, str)]
+            rules = [str(item) for item in patch.get("rulesUsed", []) if isinstance(item, str)]
+        summary = f"Apply safe manuscript patch {patch_id}"
+        body = "Runtime accepted a validated PatchProposal and applied it through the patch engine."
+        return (
+            f"{summary}\n\n"
+            f"{body}\n\n"
+            f"Constraint: All manuscript writes must pass PatchProposal validation\n"
+            f"Confidence: high\n"
+            f"Scope-risk: narrow\n"
+            f"Directive: Do not bypass RuntimeOrchestrator.accept_patch for manuscript writes\n"
+            f"Tested: Runtime patch validation before write\n"
+            f"Related: patch={patch_id}; files={','.join(files)}; sources={','.join(sources)}; rules={','.join(rules)}\n"
+        )
+
     def _run_revise(self, annotations) -> Dict[str, object]:
         if not annotations:
             return {"id": "PP-empty", "summary": "没有可处理的 open 批注。", "sourceAnnotations": [], "changes": []}
-        patch = make_annotation_patch(self.context, annotations[0].id)
+        annotation = annotations[0]
+        if self._looks_like_prompt_injection(annotation.text):
+            patch = {
+                "id": f"PP-{annotation.id}",
+                "summary": "检测到批注中包含越权/注入式指令，已作为普通用户文本处理并拒绝自动改稿。",
+                "sourceAnnotations": [annotation.id],
+                "rulesUsed": [],
+                "changes": [],
+                "safety": {
+                    "promptInjectionSuspected": True,
+                    "warning": "Annotation text is untrusted user content, not system instruction.",
+                },
+            }
+        else:
+            patch = make_annotation_patch(self.context, annotation.id)
         result = validate_patch(self.context, patch)
         patch["validation"] = {
             "valid": result.valid,
             "issues": [issue.__dict__ for issue in result.issues],
         }
         return patch
+
+    @staticmethod
+    def _looks_like_prompt_injection(text: str) -> bool:
+        lowered = text.lower()
+        suspicious = (
+            "忽略所有系统规则",
+            "不要生成 patch",
+            "不要生成patch",
+            "删除 .bookai",
+            "删除.bookai",
+            "chapter-status.yaml",
+            "locked",
+            "system rules",
+            "ignore all",
+        )
+        return any(token in lowered for token in suspicious)
+
+    def evaluate_file_change_request(self, event: object) -> Dict[str, object]:
+        self._reload_context()
+        paths = self._extract_file_change_paths(event)
+        if not paths:
+            return {"decision": "decline", "reason": "no_file_paths"}
+        reasons: List[str] = []
+        for file_path in paths:
+            path = str(file_path)
+            if path.startswith("/") or ".." in Path(path).parts:
+                reasons.append(f"forbidden_path:{path}")
+                continue
+            if path.startswith(".bookai/") or path in {"rules.yaml", "book.spec.md", "style-guide.md"}:
+                reasons.append(f"metadata_requires_runtime_tool:{path}")
+                continue
+            if not path.startswith("chapters/") or Path(path).suffix != ".md":
+                reasons.append(f"forbidden_file:{path}")
+                continue
+            status = self.context.status_for_file(path)
+            if status == "locked":
+                reasons.append(f"locked_chapter:{path}")
+            elif status == "reviewed":
+                reasons.append(f"reviewed_requires_secondary_approval:{path}")
+            else:
+                reasons.append(f"direct_manuscript_write_requires_patch_proposal:{path}")
+        return {"decision": "decline", "reason": ";".join(reasons), "paths": paths}
+
+    @staticmethod
+    def _extract_file_change_paths(event: object) -> List[str]:
+        if not isinstance(event, dict):
+            return []
+        paths: List[str] = []
+        for key in ("file", "path"):
+            value = event.get(key)
+            if isinstance(value, str):
+                paths.append(value)
+        changes = event.get("changes") or event.get("fileChanges") or event.get("files")
+        if isinstance(changes, list):
+            for item in changes:
+                if isinstance(item, str):
+                    paths.append(item)
+                elif isinstance(item, dict):
+                    for key in ("file", "path"):
+                        value = item.get(key)
+                        if isinstance(value, str):
+                            paths.append(value)
+        return sorted(set(paths))
 
     def _run_propagate(self, annotations) -> Dict[str, object]:
         proposals: Dict[str, List[Dict[str, object]]] = {}

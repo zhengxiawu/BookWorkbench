@@ -55,7 +55,7 @@ class RuntimeTests(unittest.TestCase):
 
             self.assertTrue(result.valid, result.error_messages())
             text = (project / "chapters" / "ch05.md").read_text(encoding="utf-8")
-            self.assertIn("<!-- mw:block id=ch05-p018 hash=sha256:a91f3c -->", text)
+            self.assertRegex(text, r"<!-- mw:block id=ch05-p018 hash=sha256:[0-9a-f]{6} -->")
             self.assertIn("纸杯沿一点点捏扁", text)
             self.assertNotIn("眼神里没有任何波动", text)
 

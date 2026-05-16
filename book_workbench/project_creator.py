@@ -25,25 +25,29 @@ def slugify(value: str, *, fallback: str = "new-book") -> str:
 
 
 def short_hash(text: str, *, length: int = 6) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:length]
+    return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()[:length]
 
 
 def build_project_plan(
     *,
     title: str,
     slug: str | None = None,
-    genre: str = "长篇小说",
-    premise: str = "一个人在新的压力下重新确认自己的选择。",
-    style: str = "冷静、具体，优先使用动作和场景压力表现人物变化。",
+    genre: str = "",
+    premise: str = "",
+    style: str = "",
     chapter_title: str = "第一章",
-    opening_text: str = "雨停后，街道像刚被人擦掉一层旧梦。",
+    opening_text: str = "",
 ) -> Dict[str, Any]:
     title = title.strip() or "未命名作品"
     project_slug = slugify(slug or title)
     if not SLUG_RE.match(project_slug):
         raise ProjectCreationError(f"Invalid project slug: {project_slug!r}")
 
-    opening_text = opening_text.strip() or "雨停后，街道像刚被人擦掉一层旧梦。"
+    genre = genre.strip() or "未设定"
+    premise = premise.strip() or "未设定"
+    style = style.strip() or "未设定"
+    chapter_title = chapter_title.strip() or "第一章"
+    opening_text = opening_text.strip()
     block_hash = f"sha256:{short_hash(opening_text)}"
     files = [
         {
@@ -109,11 +113,11 @@ def create_book_project(
     *,
     title: str,
     slug: str | None = None,
-    genre: str = "长篇小说",
-    premise: str = "一个人在新的压力下重新确认自己的选择。",
-    style: str = "冷静、具体，优先使用动作和场景压力表现人物变化。",
+    genre: str = "",
+    premise: str = "",
+    style: str = "",
     chapter_title: str = "第一章",
-    opening_text: str = "雨停后，街道像刚被人擦掉一层旧梦。",
+    opening_text: str = "",
 ) -> Dict[str, Any]:
     plan = build_project_plan(
         title=title,

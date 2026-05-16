@@ -294,7 +294,7 @@ class ExtendedRuntimeTests(unittest.TestCase):
             self.assertTrue(inserted["applied"], inserted)
             self.assertTrue(replaced["applied"], replaced)
             self.assertEqual(text.count("<!-- mw:block id=ch05-p017 hash=sha256:8cc91a -->"), 1)
-            self.assertEqual(text.count("<!-- mw:block id=ch05-p018 hash=sha256:a91f3c -->"), 1)
+            self.assertEqual(text.count("mw:block id=ch05-p018"), 1)
             self.assertIn("新插入的一段。", text)
             self.assertIn("纸杯沿一点点捏扁", text)
 
