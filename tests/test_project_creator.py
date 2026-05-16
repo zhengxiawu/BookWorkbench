@@ -36,6 +36,10 @@ class ProjectCreatorTests(unittest.TestCase):
                 self.assertIn("never", content.lower())
 
             self.assertFalse(global_skill_root.exists(), "project creation must not write ~/.codex/skills")
+            self.assertIn("requiresSecondaryApproval", (project / ".codex/skills/revise-with-annotations/SKILL.md").read_text(encoding="utf-8"))
+            self.assertIn("annotationRemapRequired", (project / ".codex/skills/revise-with-annotations/SKILL.md").read_text(encoding="utf-8"))
+            self.assertIn("patchProposalsByChapter", (project / ".codex/skills/propagate-rules/SKILL.md").read_text(encoding="utf-8"))
+            self.assertIn("rules: []", (project / ".codex/skills/extract-writing-rules/SKILL.md").read_text(encoding="utf-8"))
             self.assertTrue(all(path.startswith(".codex/skills/") for path in PROJECT_SKILL_FILES))
             self.assertTrue(all(path in result["createdFiles"] for path in PROJECT_SKILL_FILES))
 

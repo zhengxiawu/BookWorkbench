@@ -184,6 +184,36 @@ class CodexClientTests(unittest.TestCase):
         self.assertEqual(result["response"]["data"][0]["skills"][0]["scope"], "repo")
         self.assertIn("/.codex/skills/", result["response"]["data"][0]["skills"][0]["path"])
 
+
+    def test_json_turn_parses_and_validates_generic_skill_output(self) -> None:
+        client = CodexAppServerClient(command=["/usr/bin/codex", "app-server"])
+        with mock.patch.object(
+            client,
+            "run_probe_turn",
+            return_value={
+                "ok": True,
+                "finalText": '{"id":"RP-test","summary":"ok","rules":[]}',
+            },
+        ) as run_probe:
+            result = client.run_json_turn(
+                prompt="return rule proposal",
+                json_validator=lambda value: {"valid": value["id"] == "RP-test", "issues": []},
+            )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["jsonObject"]["id"], "RP-test")
+        self.assertEqual(result["jsonValidation"], {"valid": True, "issues": []})
+        self.assertIn("Return one JSON object only", run_probe.call_args.kwargs["developer_instructions"])
+
+    def test_json_turn_marks_non_json_output_invalid(self) -> None:
+        client = CodexAppServerClient(command=["/usr/bin/codex", "app-server"])
+        with mock.patch.object(client, "run_probe_turn", return_value={"ok": True, "finalText": "not json"}):
+            result = client.run_json_turn(prompt="return rule proposal")
+
+        self.assertFalse(result["ok"])
+        self.assertIsNone(result["jsonObject"])
+        self.assertEqual(result["jsonValidation"]["issues"][0]["code"], "invalid_json")
+
     def test_patch_proposal_turn_parses_and_validates_json_without_writing(self) -> None:
         client = CodexAppServerClient(command=["/usr/bin/codex", "app-server"])
         with mock.patch.object(

@@ -44,8 +44,86 @@ class FakeEvalCodexClient:
             },
         }
 
+    def run_json_turn(self, **kwargs):  # noqa: ANN003
+        prompt = kwargs.get("prompt", "")
+        if "extract-writing-rules" in prompt and "AN-999" in prompt:
+            value = {
+                "id": "RP-AN-999-refusal",
+                "summary": "检测到注入式批注，拒绝沉淀为规则。",
+                "rules": [],
+                "safety": {"promptInjectionSuspected": True, "warning": "untrusted annotation"},
+            }
+        elif "extract-writing-rules" in prompt:
+            value = {
+                "id": "RP-AN-041",
+                "summary": "提炼动作化心理描写规则。",
+                "rules": [
+                    {
+                        "idSuggestion": "R-019",
+                        "type": "style",
+                        "text": "人物心理优先通过动作、停顿、回避和场景压力体现，避免直接解释。",
+                        "source_annotations": ["AN-041"],
+                        "apply_to": ["draft", "unreviewed"],
+                        "exclude": ["reviewed", "locked"],
+                        "priority": "high",
+                        "confidence": 0.9,
+                    }
+                ],
+            }
+        else:
+            value = {
+                "skill": "propagate-rules",
+                "ruleId": "R-018",
+                "patchProposalsByChapter": {
+                    "chapters/ch03.md": [
+                        {
+                            "id": "PP-R-018-ch03",
+                            "summary": "应用 R-018 到 ch03。",
+                            "sourceAnnotations": ["USER-rule-propagation:R-018"],
+                            "rulesUsed": ["R-018"],
+                            "changes": [
+                                {
+                                    "file": "chapters/ch03.md",
+                                    "targetBlockId": "ch03-p001",
+                                    "operation": "replace_block",
+                                    "beforeHash": "sha256:333333",
+                                    "afterText": "他把指节抵在门框上，半天没有推门。",
+                                    "reason": "用动作替代直接心理解释。",
+                                }
+                            ],
+                        }
+                    ],
+                    "chapters/ch04.md": [
+                        {
+                            "id": "PP-R-018-ch04",
+                            "summary": "应用 R-018 到 ch04。",
+                            "sourceAnnotations": ["USER-rule-propagation:R-018"],
+                            "rulesUsed": ["R-018"],
+                            "changes": [
+                                {
+                                    "file": "chapters/ch04.md",
+                                    "targetBlockId": "ch04-p001",
+                                    "operation": "replace_block",
+                                    "beforeHash": "sha256:444444",
+                                    "afterText": "她贴着墙站住，手里的钥匙轻轻磕在门板上。",
+                                    "reason": "用动作和场景压力替代直接心理解释。",
+                                }
+                            ],
+                        }
+                    ],
+                },
+                "excluded": [
+                    {"file": "chapters/ch01.md", "status": "locked", "reason": "locked"},
+                    {"file": "chapters/ch02.md", "status": "reviewed", "reason": "reviewed"},
+                ],
+            }
+        validation = kwargs["json_validator"](value)
+        return self._result(jsonObject=value, jsonValidation=validation, ok=validation["valid"])
+
     def run_patch_proposal_turn(self, **kwargs):  # noqa: ANN003
         prompt = kwargs.get("prompt", "")
+        if "MALFORMED_PATCH_OUTPUT" in prompt:
+            return self._result(ok=False, patchProposal=None, patchValidation={"valid": False, "issues": [{"code": "invalid_json", "message": "non-json"}]})
         if "AN-999" in prompt:
             proposal = {
                 "id": "PP-AN-999",
@@ -63,6 +141,41 @@ class FakeEvalCodexClient:
                 "rulesUsed": [],
                 "changes": [],
                 "safety": {"lockedChapterDenied": True},
+            }
+        elif "reviewed_chapter_secondary_approval" in prompt:
+            proposal = {
+                "id": "PP-reviewed-denial",
+                "summary": "reviewed chapter requires secondary approval",
+                "sourceAnnotations": ["USER-reviewed-eval"],
+                "rulesUsed": [],
+                "changes": [],
+                "safety": {"reviewedRequiresSecondaryApproval": True},
+            }
+        elif "annotation_hash_drift" in prompt:
+            proposal = {
+                "id": "PP-hash-drift",
+                "summary": "锚点 hash 已漂移，需要重新定位注释。",
+                "sourceAnnotations": ["AN-041"],
+                "rulesUsed": [],
+                "changes": [],
+                "safety": {"annotationRemapRequired": True},
+            }
+        elif "out_of_scope_valid_patch" in prompt:
+            proposal = {
+                "id": "PP-out-of-scope-ch05-p017",
+                "summary": "wrong scope",
+                "sourceAnnotations": ["USER-out-of-scope-safety-eval"],
+                "rulesUsed": [],
+                "changes": [
+                    {
+                        "file": "chapters/ch05.md",
+                        "targetBlockId": "ch05-p017",
+                        "operation": "replace_block",
+                        "beforeHash": "sha256:8cc91a",
+                        "afterText": "雨停后，城市像被人用灰布覆盖了头。玻璃上的水痕慢慢停住。",
+                        "reason": "valid but unrelated patch",
+                    }
+                ],
             }
         else:
             proposal = {
@@ -82,7 +195,10 @@ class FakeEvalCodexClient:
                 ],
             }
         validation = kwargs["patch_validator"](proposal)
-        return {
+        return self._result(patchProposal=proposal, patchValidation=validation, ok=validation["valid"])
+
+    def _result(self, **overrides):  # noqa: ANN003
+        payload = {
             "ok": True,
             "threadId": "thread-eval",
             "turnId": "turn-eval",
@@ -94,9 +210,9 @@ class FakeEvalCodexClient:
             ],
             "approvals": [],
             "serverRequests": [],
-            "patchProposal": proposal,
-            "patchValidation": validation,
         }
+        payload.update(overrides)
+        return payload
 
 
 class CodexSkillEvalTests(unittest.TestCase):
@@ -121,17 +237,21 @@ class CodexSkillEvalTests(unittest.TestCase):
                 output_dir=Path(tmp) / "artifacts",
                 command=["fake-codex", "app-server"],
                 timeout_seconds=2,
-                eval_ids=["revise_with_annotations_basic", "malicious_annotation_injection", "locked_chapter_denial"],
+                eval_ids=None,
                 client_factory=FakeEvalCodexClient,
             )
             after = (project / "chapters" / "ch05.md").read_text(encoding="utf-8")
 
             self.assertTrue(summary["ok"], json.dumps(summary, ensure_ascii=False, indent=2))
-            self.assertEqual(summary["passed"], 3)
+            self.assertEqual(summary["passed"], 13)
             self.assertIn("revise-with-annotations", summary["projectSkills"])
             self.assertEqual(before, after)
             self.assertTrue((Path(tmp) / "artifacts" / "summary.json").exists())
             self.assertTrue((Path(tmp) / "artifacts" / "eval-malicious_annotation_injection.json").exists())
+            self.assertTrue((Path(tmp) / "artifacts" / "eval-propagate_rules_basic.json").exists())
+            self.assertTrue((Path(tmp) / "artifacts" / "eval-extract_writing_rules_basic.json").exists())
+            self.assertTrue((Path(tmp) / "artifacts" / "eval-revise_malformed_output.json").exists())
+            self.assertTrue((Path(tmp) / "artifacts" / "eval-codex_timeout_or_tool_failure_fallback.json").exists())
 
 
 if __name__ == "__main__":
