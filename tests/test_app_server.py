@@ -118,6 +118,14 @@ class WorkspaceModeAppServerTests(unittest.TestCase):
         self.assertTrue((Path(created["root"]) / ".bookai" / "discussions.jsonl").exists())
         self.assertEqual(discussions["discussions"], [])
 
+
+    def test_index_script_has_separate_existing_project_list_state(self) -> None:
+        html = self.get("/")
+
+        self.assertIn("const hasProjects = state.projects.length > 0", html)
+        self.assertIn('data-testid="project-list-panel"', html)
+        self.assertIn("请选择一个已有书稿项目，或新建自己的项目。", html)
+
     def test_create_discussion_writes_sidecar_and_not_chapter(self) -> None:
         created = self.post(
             "/api/projects/create",

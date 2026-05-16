@@ -75,14 +75,23 @@ def main() -> int:
                 opening = "我站在门口，心里很乱，想起过去很多事情。"
                 page.locator("#projectOpeningInput").fill(opening)
                 page.locator("#submitProjectBtn").click()
-                expect(page.get_by_test_id("project-card").filter(has_text="雾中来信")).to_be_visible(timeout=5000)
                 user_project = workspace / "fog-letter"
+                expect(page.get_by_text("章节列表")).to_be_visible(timeout=5000)
+                expect(page.get_by_test_id("empty-workspace")).to_be_hidden(timeout=5000)
+                expect(page.locator("#chapterRows").get_by_text("chapters/ch01.md")).to_be_visible()
+                assert "还没有书稿项目" not in page.locator("#dashboardMain").inner_text(), "created project must replace the empty workspace state"
+                assert page.evaluate("() => window.BookWorkbench.state.project?.summary?.relativePath") == "fog-letter", "created project should open automatically"
                 assert (user_project / ".bookai" / "discussions.jsonl").exists(), "new projects must include discussion sidecar"
-                page.screenshot(path=str(artifacts / "02-created-project-listed.png"), full_page=True)
+                page.screenshot(path=str(artifacts / "02-created-project-opened.png"), full_page=True)
 
+                page.evaluate("() => { window.BookWorkbench.state.project = null; window.BookWorkbench.setView('dashboard'); }")
+                expect(page.get_by_test_id("project-list-panel")).to_be_visible(timeout=5000)
+                expect(page.get_by_test_id("empty-workspace")).to_be_hidden(timeout=5000)
+                expect(page.get_by_test_id("project-card").filter(has_text="雾中来信")).to_be_visible(timeout=5000)
                 page.get_by_test_id("project-card").filter(has_text="雾中来信").click()
                 expect(page.get_by_text("章节列表")).to_be_visible(timeout=5000)
                 expect(page.locator("#chapterRows").get_by_text("chapters/ch01.md")).to_be_visible()
+
                 page.get_by_text("打开 ›").first.click()
                 expect(page.locator("#chapterSelect")).to_contain_text("第一章 门缝", timeout=5000)
                 page.screenshot(path=str(artifacts / "03-open-created-project.png"), full_page=True)

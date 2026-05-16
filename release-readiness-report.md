@@ -6,14 +6,14 @@ Date: 2026-05-16
 
 Status: **PASS for the implemented MVP safety/UI gates**.
 
-The app now starts in workspace mode with no preloaded novel. Users see an empty project list, can open the “新建项目” modal, create a project, open it, record project discussions, add sidecar annotations, generate a PatchProposal, review the Diff, accept it, and get a Git checkpoint. Runtime safety gates keep manuscript writes behind PatchProposal validation, Diff review, and Git checkpointing.
+The app now starts in workspace mode with no preloaded novel. Users see an empty project list, can open the “新建项目” modal, create a project, land directly in the created project dashboard, record project discussions, add sidecar annotations, generate a PatchProposal, review the Diff, accept it, and get a Git checkpoint. Runtime safety gates keep manuscript writes behind PatchProposal validation, Diff review, and Git checkpointing.
 
 ## Verification summary
 
 | Area | Result | Evidence |
 | --- | --- | --- |
 | Python compile | PASS | `python3 -m compileall -q book_workbench tests scripts` |
-| Unit/integration tests | PASS | `python3 -m unittest discover -s tests -v` — 53 tests |
+| Unit/integration tests | PASS | `python3 -m unittest discover -s tests -v` — 54 tests |
 | Browser E2E | PASS | `python3 scripts/browser_e2e.py` |
 | JS syntax | PASS | extracted served script checked by `node --check` inside app-server tests |
 | Diff hygiene | PASS | `git diff --check` |
@@ -23,7 +23,7 @@ The app now starts in workspace mode with no preloaded novel. Users see an empty
 Browser artifacts are saved under `.omx/evidence/browser-e2e/`:
 
 - `01-empty-workspace.png`
-- `02-created-project-listed.png`
+- `02-created-project-opened.png`
 - `03-open-created-project.png`
 - `04-discussion-sidecar.png`
 - `05-annotation-sidecar.png`
@@ -34,6 +34,12 @@ Browser artifacts are saved under `.omx/evidence/browser-e2e/`:
 - `console.json` — `[]`
 - `page-errors.json` — `[]`
 - `summary.json` — `ok: true`
+
+
+Post-create UX regression evidence is saved under `.omx/evidence/post-create-ux-fix/`:
+
+- `post-create-opened.png`
+- `summary.json` — `ok: true`, `relativePath: post-create-open`, `hasEmptyWorkspace: false`, `scrollY: 0`
 
 ## Implemented release gates
 
@@ -58,12 +64,13 @@ Browser artifacts are saved under `.omx/evidence/browser-e2e/`:
 
 1. Confirmed empty workspace and no demo novel.
 2. Created a new user book `雾中来信` with user-supplied opening text.
-3. Opened the created project and first chapter.
-4. Created a project discussion; verified it was written to `.bookai/discussions.jsonl` and did not mutate the chapter.
-5. Added an annotation; verified `.bookai/annotations.jsonl` changed and chapter text did not.
-6. Ran AI revise; verified Diff/PatchProposal appeared and chapter text was still unchanged before acceptance.
-7. Accepted the patch; verified chapter text changed through Runtime and Git commit count increased from 0 to 1.
-8. Repeated the original `AN-041` fixture path and verified commit count increased from 1 to 2.
+3. Verified creation automatically opened the project dashboard, hid the empty workspace state, and exposed `chapters/ch01.md` without scrolling.
+4. Simulated an existing-project workspace with no project open and verified the first screen is `项目列表`, not `还没有书稿项目`, then opened the card.
+5. Created a project discussion; verified it was written to `.bookai/discussions.jsonl` and did not mutate the chapter.
+6. Added an annotation; verified `.bookai/annotations.jsonl` changed and chapter text did not.
+7. Ran AI revise; verified Diff/PatchProposal appeared and chapter text was still unchanged before acceptance.
+8. Accepted the patch; verified chapter text changed through Runtime and Git commit count increased from 0 to 1.
+9. Repeated the original `AN-041` fixture path and verified commit count increased from 1 to 2.
 
 ## Fixes applied during QA
 
@@ -77,6 +84,8 @@ Browser artifacts are saved under `.omx/evidence/browser-e2e/`:
 - Added suspicious malicious annotation handling that refuses automatic manuscript changes.
 - Added app-server file-change approval policy seam that declines direct manuscript/metadata/locked/reviewed writes outside Runtime PatchProposal flow.
 - Added browser E2E harness and 12-gate release tests.
+- Fixed post-create UX so the new project opens immediately instead of leaving the “还没有书稿项目” empty state above the card.
+- Added a regression assertion that created projects hide `empty-workspace` and set `state.project.summary.relativePath`.
 
 ## Computer-use status
 
