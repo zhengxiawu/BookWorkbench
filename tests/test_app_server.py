@@ -27,6 +27,7 @@ class FakeCodexClient:
         self.skills_cwds = []
         self.probe_calls = []
         self.patch_probe_calls = []
+        self.patch_mode = "valid"
 
     def health(self) -> dict:
         return {
@@ -73,24 +74,90 @@ class FakeCodexClient:
 
     def run_patch_proposal_turn(self, **kwargs):  # noqa: ANN003
         self.patch_probe_calls.append(kwargs)
-        proposal = {
-            "id": "PP-probe",
-            "summary": "probe",
-            "sourceAnnotations": ["USER-probe"],
-            "rulesUsed": [],
-            "changes": [
-                {
-                    "file": "chapters/ch05.md",
-                    "targetBlockId": "ch05-p018",
-                    "operation": "replace_block",
-                    "beforeHash": "sha256:a91f3c",
-                    "afterText": "我坐在审讯室里，盯着对面的男人。他没有看我，只把纸杯沿一点点捏扁。",
-                    "reason": "probe patch proposal",
-                }
-            ],
-        }
+        if self.patch_mode == "invalid":
+            proposal = {
+                "id": "PP-invalid",
+                "summary": "invalid probe",
+                "sourceAnnotations": ["AN-041"],
+                "rulesUsed": [],
+                "changes": [
+                    {
+                        "file": "chapters/ch01.md",
+                        "targetBlockId": "ch01-p001",
+                        "operation": "replace_block",
+                        "beforeHash": "sha256:111111",
+                        "afterText": "should not apply",
+                        "reason": "invalid locked change",
+                    }
+                ],
+            }
+        elif self.patch_mode == "user-book":
+            proposal = {
+                "id": "PP-codex-user-book",
+                "summary": "codex main path for created project",
+                "sourceAnnotations": ["AN-001"],
+                "rulesUsed": ["R-001"],
+                "changes": [
+                    {
+                        "file": "chapters/ch01.md",
+                        "targetBlockId": "ch01-p001",
+                        "operation": "replace_block",
+                        "beforeHash": "sha256:3d7bdd",
+                        "afterText": "我站在门口，把那封信翻到背面，指尖停在没有署名的空白处。",
+                        "reason": "fake codex main path proposal",
+                    }
+                ],
+            }
+        elif self.patch_mode == "wrong-scope":
+            proposal = {
+                "id": "PP-wrong-scope",
+                "summary": "valid but unrelated patch",
+                "sourceAnnotations": ["USER-codex"],
+                "rulesUsed": ["R-018"],
+                "changes": [
+                    {
+                        "file": "chapters/ch05.md",
+                        "targetBlockId": "ch05-p017",
+                        "operation": "replace_block",
+                        "beforeHash": "sha256:8cc91a",
+                        "afterText": "雨停后，城市像被一只潮湿的手按住了喉咙。",
+                        "reason": "wrong scope patch that runtime would otherwise accept",
+                    }
+                ],
+            }
+        else:
+            proposal = {
+                "id": "PP-probe",
+                "summary": "probe",
+                "sourceAnnotations": ["AN-041"],
+                "rulesUsed": ["R-018"],
+                "changes": [
+                    {
+                        "file": "chapters/ch05.md",
+                        "targetBlockId": "ch05-p018",
+                        "operation": "replace_block",
+                        "beforeHash": "sha256:a91f3c",
+                        "afterText": "我坐在审讯室里，盯着对面的男人。他没有看我，只把纸杯沿一点点捏扁。",
+                        "reason": "probe patch proposal",
+                    }
+                ],
+            }
         validation = kwargs["patch_validator"](proposal)
-        return {"ok": validation["valid"], "patchProposal": proposal, "patchValidation": validation}
+        return {
+            "ok": validation["valid"],
+            "threadId": "thread-test",
+            "turnId": "turn-test",
+            "notifications": [
+                {"method": "thread/started"},
+                {"method": "turn/started"},
+                {"method": "item/completed"},
+                {"method": "turn/completed"},
+            ],
+            "approvals": [],
+            "serverRequests": [],
+            "patchProposal": proposal,
+            "patchValidation": validation,
+        }
 
 
 class WorkspaceModeAppServerTests(unittest.TestCase):
@@ -346,6 +413,50 @@ class AppServerTests(unittest.TestCase):
         self.assertTrue(patch_probe["ok"], patch_probe)
         self.assertEqual(patch_probe["patchValidation"], {"valid": True, "issues": []})
         self.assertEqual(fake.patch_probe_calls[-1]["cwd"], self.project.resolve())
+
+    def test_ai_revise_uses_codex_patchproposal_when_runtime_valid(self) -> None:
+        result = self.post(
+            "/api/ai/revise",
+            {"annotationIds": ["AN-041"], "file": "chapters/ch05.md", "timeoutSeconds": 1},
+        )
+        fake = self.server.app.codex_client
+
+        self.assertEqual(result["source"], "codex-app-server")
+        self.assertEqual(result["output"]["id"], "PP-probe")
+        self.assertEqual(result["output"]["sourceAnnotations"], ["AN-041"])
+        self.assertEqual(result["codex"]["patchValidation"], {"valid": True, "issues": []})
+        self.assertEqual(fake.patch_probe_calls[-1]["cwd"], self.project.resolve())
+        self.assertIn("revise-with-annotations", fake.patch_probe_calls[-1]["prompt"])
+        self.assertIn("AN-041", fake.patch_probe_calls[-1]["prompt"])
+        self.assertNotIn("纸杯沿一点点捏扁", (self.project / "chapters" / "ch05.md").read_text(encoding="utf-8"))
+
+    def test_ai_revise_falls_back_when_codex_patchproposal_is_invalid(self) -> None:
+        fake = self.server.app.codex_client
+        fake.patch_mode = "invalid"
+        result = self.post(
+            "/api/ai/revise",
+            {"annotationIds": ["AN-041"], "file": "chapters/ch05.md", "timeoutSeconds": 1},
+        )
+
+        self.assertEqual(result["source"], "runtime-deterministic")
+        self.assertEqual(result["fallbackReason"], "codex_patch_failed_runtime_validation")
+        self.assertEqual(result["output"]["sourceAnnotations"], ["AN-041"])
+        self.assertTrue(result["output"]["validation"]["valid"], result["output"]["validation"])
+        self.assertIn("locked_chapter", json.dumps(result["codex"]["patchValidation"], ensure_ascii=False))
+
+    def test_ai_revise_falls_back_when_codex_patchproposal_is_valid_but_out_of_scope(self) -> None:
+        fake = self.server.app.codex_client
+        fake.patch_mode = "wrong-scope"
+        result = self.post(
+            "/api/ai/revise",
+            {"annotationIds": ["AN-041"], "file": "chapters/ch05.md", "timeoutSeconds": 1},
+        )
+
+        self.assertEqual(result["source"], "runtime-deterministic")
+        self.assertEqual(result["fallbackReason"], "codex_patch_out_of_annotation_scope")
+        self.assertEqual(result["output"]["sourceAnnotations"], ["AN-041"])
+        self.assertTrue(result["codex"]["patchValidation"]["valid"], result["codex"]["patchValidation"])
+        self.assertNotIn("潮湿的手", (self.project / "chapters" / "ch05.md").read_text(encoding="utf-8"))
 
     def test_project_annotations_chapter_and_audit_endpoints(self) -> None:
         project = self.get("/api/project")

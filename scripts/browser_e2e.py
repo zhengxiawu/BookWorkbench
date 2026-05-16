@@ -16,6 +16,9 @@ from tests.test_fixtures import write_black_rain_fixture
 
 
 class FakeCodexClient:
+    def __init__(self) -> None:
+        self.patch_calls = 0
+
     def health(self) -> dict:
         return {"ok": True, "command": ["fake-codex", "app-server"], "error": None, "notifications": [], "durationMs": 1}
 
@@ -41,24 +44,61 @@ class FakeCodexClient:
         }
 
     def run_patch_proposal_turn(self, **kwargs):  # noqa: ANN003
-        proposal = {
-            "id": "PP-e2e-codex",
-            "summary": "browser e2e codex seam",
-            "sourceAnnotations": ["USER-e2e"],
-            "rulesUsed": [],
-            "changes": [
-                {
-                    "file": "chapters/ch01.md",
-                    "targetBlockId": "ch01-p001",
-                    "operation": "replace_block",
-                    "beforeHash": "sha256:6c3a74",
-                    "afterText": "我把信封翻到背面，指尖在空白处停住。",
-                    "reason": "fake codex seam proposal for browser e2e",
-                }
-            ],
-        }
+        self.patch_calls += 1
+        prompt = kwargs.get("prompt", "")
+        if "AN-001" in prompt:
+            proposal = {
+                "id": "PP-e2e-codex-user",
+                "summary": "browser e2e codex main path",
+                "sourceAnnotations": ["AN-001"],
+                "rulesUsed": ["R-001"],
+                "changes": [
+                    {
+                        "file": "chapters/ch01.md",
+                        "targetBlockId": "ch01-p001",
+                        "operation": "replace_block",
+                        "beforeHash": "sha256:3d7bdd",
+                        "afterText": "我站在门口，把那封信翻到背面，指尖停在没有署名的空白处。",
+                        "reason": "fake codex main path proposal for browser e2e",
+                    }
+                ],
+            }
+        elif "AN-1000" in prompt:
+            proposal = {
+                "id": "PP-e2e-codex-invalid",
+                "summary": "force fallback for fixture path",
+                "sourceAnnotations": ["AN-1000"],
+                "rulesUsed": [],
+                "changes": [],
+            }
+        else:
+            proposal = {
+                "id": "PP-e2e-codex",
+                "summary": "browser e2e codex seam",
+                "sourceAnnotations": ["AN-041"],
+                "rulesUsed": ["R-018"],
+                "changes": [
+                    {
+                        "file": "chapters/ch05.md",
+                        "targetBlockId": "ch05-p018",
+                        "operation": "replace_block",
+                        "beforeHash": "sha256:a91f3c",
+                        "afterText": "我坐在审讯室里，盯着对面的男人。他没有看我，只把纸杯沿一点点捏扁。",
+                        "reason": "fake codex seam proposal for browser e2e",
+                    }
+                ],
+            }
         validation = kwargs["patch_validator"](proposal)
-        return {"ok": validation["valid"], "patchProposal": proposal, "patchValidation": validation}
+        return {
+            "ok": validation["valid"],
+            "threadId": "thread-e2e",
+            "turnId": "turn-e2e",
+            "notifications": [{"method": "thread/started"}, {"method": "turn/started"}, {"method": "item/completed"}, {"method": "turn/completed"}],
+            "approvals": [],
+            "serverRequests": [],
+            "patchProposal": proposal,
+            "patchValidation": validation,
+        }
 
 
 def git_count(root: Path) -> int:
@@ -175,7 +215,7 @@ def main() -> int:
                 expect(page.locator("#view-editor")).to_be_visible(timeout=5000)
                 final_text = (user_project / "chapters" / "ch01.md").read_text(encoding="utf-8")
                 after_commits = git_count(user_project)
-                assert "指节抵住桌沿" in final_text, "accepted patch must apply deterministic non-demo revision"
+                assert "没有署名的空白处" in final_text, "accepted patch must apply codex-generated main path revision"
                 assert opening not in final_text, "accepted patch should replace the annotated direct-emotion wording"
                 assert after_commits == before_commits + 1, "accepted patch must create git commit"
                 page.screenshot(path=str(artifacts / "07-user-book-after-accept-commit.png"), full_page=True)

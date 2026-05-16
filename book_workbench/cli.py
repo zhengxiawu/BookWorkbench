@@ -10,6 +10,7 @@ from .annotation_engine import annotation_to_dict, classification_summary, list_
 from .app_server import serve
 from .audit import AuditLog
 from .codex_client import CodexAppServerClient
+from .codex_skill_eval import run_codex_skill_evals
 from .patch_engine import load_patch, make_annotation_patch, validate_patch as validate_patch_proposal
 from .project import load_project
 from .project_creator import create_book_project
@@ -182,6 +183,19 @@ def cmd_codex_patch_probe(args: argparse.Namespace) -> int:
     return 0 if result.get("ok") else 1
 
 
+def cmd_codex_skill_eval(args: argparse.Namespace) -> int:
+    command = args.command if args.command else ["codex", "app-server"]
+    result = run_codex_skill_evals(
+        project=args.project,
+        output_dir=args.output,
+        command=command,
+        timeout_seconds=args.timeout,
+        eval_ids=args.eval or None,
+    )
+    print_json(result)
+    return 0 if result.get("ok") else 1
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     if args.project is None and args.workspace is None:
         parser_workspace_error = "serve requires --workspace for empty workspace mode or --project for direct project mode"
@@ -327,6 +341,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override command, default: codex app-server",
     )
     codex_patch_probe.set_defaults(func=cmd_codex_patch_probe)
+
+    codex_skill_eval = sub.add_parser("codex-skill-eval", help="Run real Codex app-server Skill evals with Runtime validation")
+    codex_skill_eval.add_argument("--project", required=True)
+    codex_skill_eval.add_argument("--output", required=True, help="Directory for eval artifacts")
+    codex_skill_eval.add_argument("--timeout", type=float, default=60.0)
+    codex_skill_eval.add_argument("--eval", action="append", help="Eval id to run; repeatable. Defaults to core suite")
+    codex_skill_eval.add_argument(
+        "--command",
+        nargs=argparse.REMAINDER,
+        help="Override command, default: codex app-server",
+    )
+    codex_skill_eval.set_defaults(func=cmd_codex_skill_eval)
 
     serve_cmd = sub.add_parser("serve", help="Start the local browser app")
     serve_cmd.add_argument("--project", help="Open this project immediately; omit for empty workspace mode")

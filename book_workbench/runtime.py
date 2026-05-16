@@ -43,6 +43,11 @@ class RuntimeOrchestrator:
         self.context = load_project(self.project_root)
         return self.context
 
+    def refreshed_context(self):
+        """Reload and return the current project context for read-only prompt construction."""
+
+        return self._reload_context()
+
     def _event(self, event_type: str, **payload: object) -> Dict[str, object]:
         return {"type": event_type, "timestamp": utc_now(), **payload}
 

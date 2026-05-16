@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from .annotation_engine import annotation_to_dict, classification_summary, list_annotations
 from .audit import AuditLog
 from .codex_client import CodexAppServerClient
+from .codex_workflow import build_revise_with_annotations_prompt, patch_has_changes, proposal_matches_annotation_scope, summarize_codex_result, validation_is_valid
 from .discussion_engine import append_discussion, list_discussions
 from .patch_engine import validate_patch
 from .project import ProjectLoadError, load_project, safe_chapter_path
@@ -363,7 +364,7 @@ INDEX_HTML = """<!doctype html>
     function renderAnnotations() { $("annotationCenter").innerHTML = state.annotations.length ? state.annotations.map((a) => `<div class="annotation-card"><div class="annotation-head"><strong>${escapeHtml(a.id)}</strong><span>${escapeHtml(a.file)} · ${escapeHtml(a.block_id)}</span></div><p>${escapeHtml(a.text)}</p><span class="status-pill status-${a.status === "open" ? "draft" : "reviewed"}">${escapeHtml(a.status)}</span></div>`).join("") : `<div class="empty-state" style="min-height:260px"><div><div class="empty-icon">☵</div><h2>暂无批注</h2><p>批注会保存在 sidecar 文件中，不会插入正文。</p></div></div>`; }
     function renderDiscussions() { const list = state.discussions || []; $("discussionCount").textContent = list.length; $("discussionList").innerHTML = list.length ? list.map((item) => `<div class="discussion-card" data-testid="discussion-card"><div class="annotation-head"><strong>${escapeHtml(item.id)}</strong><span>${escapeHtml(item.file || "项目")}${item.blockId ? " · " + escapeHtml(item.blockId) : ""}</span></div><p>${escapeHtml(item.text)}</p></div>`).join("") : `<div class="empty-state" style="min-height:220px"><div><div class="empty-icon">✎</div><h2>暂无讨论</h2><p>先记录写作意图；后续改稿仍要走 Patch 审核。</p></div></div>`; }
     function renderRules() { if (!hasProject()) return; const rules = state.project?.rules || []; $("ruleCount").textContent = rules.length; $("ruleList").innerHTML = rules.length ? rules.map((rule, idx) => `<div class="rule-row ${idx === 0 ? "active" : ""}"><div class="rule-meta"><span>${escapeHtml(rule.id)}</span><span class="ok">启用 ●</span></div><strong>${escapeHtml(rule.text)}</strong><div class="rule-meta"><span>来源：${escapeHtml((rule.source_annotations || []).join("、") || "用户规则")}</span><span class="tag">${escapeHtml((rule.apply_to || []).join(" / ") || "全部")}</span></div></div>`).join("") : `<div class="empty-state" style="min-height:220px"><div><div class="empty-icon">▱</div><h2>暂无规则</h2><p>可以从批注中沉淀规则。</p></div></div>`; const rule = rules[0]; $("ruleDetail").innerHTML = rule ? `<div><strong>${escapeHtml(rule.id)}</strong> <span class="status-pill status-reviewed">启用</span></div><h2>${escapeHtml(rule.text)}</h2><p class="muted">作用范围：${escapeHtml((rule.apply_to || []).join(" / ") || "全部")}；排除：${escapeHtml((rule.exclude || []).join(" / ") || "无")}</p>` : `<h2>选择一条规则</h2><p class="muted">规则传播必须先生成 PatchProposal。</p>`; }
-    async function runRevise() { const annotation = selectedAnnotation(); if (!annotation) throw new Error("当前项目没有可处理批注。请先添加批注。 "); const chapterBefore = state.currentFile ? await api("/api/chapters/" + encodeURIComponent(state.currentFile)) : null; const result = await api("/api/skills/run", { method: "POST", body: JSON.stringify({ skill: "revise-with-annotations", annotationIds: [annotation.id], file: annotation.file }) }); state.lastPatch = result.output; if (chapterBefore && annotation.file === state.currentFile) state.currentChapter = chapterBefore; toast("AI 建议已生成 PatchProposal，进入 Diff 审核。 "); await previewPatch(false); setView("diff"); return result; }
+    async function runRevise() { const annotation = selectedAnnotation(); if (!annotation) throw new Error("当前项目没有可处理批注。请先添加批注。 "); const chapterBefore = state.currentFile ? await api("/api/chapters/" + encodeURIComponent(state.currentFile)) : null; const result = await api("/api/ai/revise", { method: "POST", body: JSON.stringify({ annotationIds: [annotation.id], file: annotation.file }) }); state.lastPatch = result.output; if (chapterBefore && annotation.file === state.currentFile) state.currentChapter = chapterBefore; const sourceLabel = result.source === "codex-app-server" ? "Codex 已生成 PatchProposal" : "Codex 不可用或未通过校验，已回退 Runtime PatchProposal"; toast(`${sourceLabel}，进入 Diff 审核。`); await previewPatch(false); setView("diff"); return result; }
     async function previewPatch(showToast = true) { if (!state.lastPatch) await runRevise(); state.lastPreview = await api("/api/patch/preview", { method: "POST", body: JSON.stringify({ patch: state.lastPatch }) }); renderDiffIfReady(); if (showToast) toast("Diff 预览已生成。 "); return state.lastPreview; }
     async function applyPatch() { if (!state.lastPatch) await runRevise(); const result = await api("/api/patch/apply", { method: "POST", body: JSON.stringify({ patch: state.lastPatch }) }); if (!result.applied) throw new Error("Patch 未通过校验，未应用。 "); toast(result.commitError ? "Patch 已应用，但 Git 提交被跳过。" : "接受并提交成功。 "); const current = state.currentFile; state.lastPatch = null; state.lastPreview = null; await loadProjectDetails(false); if (current) await loadChapter(current); setView("editor"); return result; }
     async function manualReviseCurrentBlock() { const chapter = state.currentChapter; if (!chapter) throw new Error("尚未加载章节。 "); const blockId = (chapter.blockIds || [])[0]; const block = chapter.blocks[blockId]; const suffix = block.text.trim() ? "\\n他停了一下，把手里的物件放回原处。" : "他停了一下，把手里的物件放回原处。"; const patch = await api("/api/patch/manual", { method: "POST", body: JSON.stringify({ file: chapter.file, blockId, afterText: `${block.text}${suffix}`, reason: "manual app smoke edit" }) }); state.lastPatch = patch; await previewPatch(false); setView("diff"); toast("已为当前段落生成手动 PatchProposal。 "); }
@@ -556,7 +557,7 @@ class RuntimeWebApp:
         (context.root / ".bookai" / "block-index.json").write_text(json.dumps(block_index, ensure_ascii=False, indent=2), encoding="utf-8")
         AuditLog(context.root).append({"type": "annotation.created", "annotationId": annotation_id, "file": file_path, "blockId": block_id})
         if self.runtime is not None:
-            self.runtime._reload_context()
+            self.runtime.refreshed_context()
         return {"annotation": annotation}
 
     def _next_annotation_id(self, context) -> str:  # noqa: ANN001 - internal ProjectContext helper
@@ -602,6 +603,74 @@ class RuntimeWebApp:
                 annotation_ids=annotation_ids,
                 scope_file=_optional_string(payload, "file") or _optional_string(payload, "scopeFile"),
             )
+
+    def ai_revise(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        runtime = self._require_runtime()
+        annotation_ids = (
+            payload.get("annotationIds")
+            or payload.get("annotation_ids")
+            or payload.get("annotations")
+            or payload.get("annotation")
+        )
+        if isinstance(annotation_ids, str):
+            annotation_ids = [annotation_ids]
+        if not isinstance(annotation_ids, list) or not annotation_ids or not isinstance(annotation_ids[0], str):
+            raise ValueError("annotationIds must include one annotation id for guarded AI revise.")
+        annotation_id = annotation_ids[0]
+        scope_file = _optional_string(payload, "file") or _optional_string(payload, "scopeFile")
+        prefer_codex = not _bool_payload(payload, "forceRuntime")
+        codex_timeout = _optional_number(payload, "timeoutSeconds")
+        fallback_reason = "codex_disabled"
+        codex_summary: Dict[str, Any] | None = None
+
+        if prefer_codex:
+            try:
+                context = runtime.refreshed_context()
+                prompt = build_revise_with_annotations_prompt(context, annotation_id)
+                codex_result = self.codex_client.run_patch_proposal_turn(
+                    prompt=prompt,
+                    cwd=self.project_root,
+                    approval_handler=self._codex_approval_handler,
+                    patch_validator=runtime.validate_patch,
+                    timeout_seconds=codex_timeout,
+                )
+                codex_summary = summarize_codex_result(codex_result)
+                proposal = codex_result.get("patchProposal")
+                validation = codex_result.get("patchValidation")
+                in_scope = proposal_matches_annotation_scope(context, annotation_id, proposal)
+                if codex_result.get("ok") and validation_is_valid(validation) and patch_has_changes(proposal) and in_scope:
+                    return {
+                        "runId": codex_result.get("turnId") or codex_result.get("threadId") or "codex-run",
+                        "skill": "revise-with-annotations",
+                        "source": "codex-app-server",
+                        "events": [{"type": "codex.patch.ready", "summary": codex_summary}],
+                        "output": proposal,
+                        "codex": codex_summary,
+                    }
+                if codex_result.get("error"):
+                    fallback_reason = str(codex_result.get("error"))
+                elif not validation_is_valid(validation):
+                    fallback_reason = "codex_patch_failed_runtime_validation"
+                elif not patch_has_changes(proposal):
+                    fallback_reason = "codex_patch_had_no_changes"
+                elif not in_scope:
+                    fallback_reason = "codex_patch_out_of_annotation_scope"
+                else:
+                    fallback_reason = "codex_patch_not_usable"
+            except Exception as exc:  # defensive UI boundary; fallback preserves local editing
+                fallback_reason = str(exc)
+
+        with self._lock:
+            fallback = runtime.run_skill(
+                "revise-with-annotations",
+                annotation_ids=[annotation_id],
+                scope_file=scope_file,
+            )
+        fallback["source"] = "runtime-deterministic"
+        fallback["fallbackReason"] = fallback_reason
+        if codex_summary is not None:
+            fallback["codex"] = codex_summary
+        return fallback
 
     def codex_skills(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
         self._require_runtime()
@@ -765,6 +834,8 @@ class BookWorkbenchHandler(BaseHTTPRequestHandler):
             payload = self._read_json()
             if parsed.path == "/api/skills/run":
                 self._send_json(self.app.run_skill(payload))
+            elif parsed.path == "/api/ai/revise":
+                self._send_json(self.app.ai_revise(payload))
             elif parsed.path == "/api/projects/open":
                 self._send_json(self.app.open_project(payload))
             elif parsed.path in {"/api/patch/preview", "/api/patches/preview"}:
