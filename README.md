@@ -105,6 +105,29 @@ State-changing `POST` endpoints require the per-server token printed by
 `serve` as `X-BookWorkbench-Token` (or `Authorization: Bearer <token>`). Keep
 `--host` on loopback unless you intentionally accept local-network risk.
 
+
+Create a new book project:
+
+```bash
+workspace="$(mktemp -d)"
+python3 -m book_workbench.cli create-project \
+  --workspace "$workspace" \
+  --title "雾中来信" \
+  --slug new-book-demo \
+  --opening-text "清晨六点，邮差把一封没有寄件人的信放在门缝里。"
+
+python3 -m book_workbench.cli serve \
+  --project "$workspace/new-book-demo" \
+  --workspace "$workspace" \
+  --port 8765 \
+  --open
+```
+
+The App also exposes `POST /api/projects/create` for creating a project in
+the configured workspace and `POST /api/patch/manual` for turning a manual
+chapter edit into a validated `PatchProposal`; preview/apply still go through
+the same Runtime safety boundary.
+
 Check Codex app-server health directly:
 
 ```bash

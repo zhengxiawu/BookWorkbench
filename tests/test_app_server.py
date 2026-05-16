@@ -45,6 +45,7 @@ class AppServerTests(unittest.TestCase):
         shutil.copytree(SAMPLE, self.project)
         self.server = create_server(
             self.project,
+            workspace_root=Path(self.tmp.name),
             builtin_skills_root=SKILLS,
             port=0,
             codex_client=FakeCodexClient(),  # deterministic unit tests
@@ -131,6 +132,61 @@ class AppServerTests(unittest.TestCase):
         self.assertTrue(apply_result["applied"], apply_result)
         self.assertIn("纸杯沿一点点捏扁", chapter_text)
         self.assertIn("patch.applied", [event["type"] for event in audit["events"]])
+
+    def test_create_new_book_then_modify_first_chapter_flow(self) -> None:
+        created = self.post(
+            "/api/projects/create",
+            {
+                "title": "雾中来信",
+                "slug": "new-book-flow",
+                "openingText": "清晨六点，邮差把一封没有寄件人的信放在门缝里。",
+            },
+        )
+        new_root = Path(created["root"])
+        new_server = create_server(
+            new_root,
+            workspace_root=Path(self.tmp.name),
+            port=0,
+            codex_client=FakeCodexClient(),
+            local_token="test-token",
+            quiet=True,
+        )
+        new_thread = threading.Thread(target=new_server.serve_forever, daemon=True)
+        new_thread.start()
+        old_base = self.base_url
+        try:
+            host, port = new_server.server_address[:2]
+            self.base_url = f"http://{host}:{port}"
+            project = self.get("/api/project")
+            chapter = self.get("/api/chapters/" + urllib.parse.quote("chapters/ch01.md", safe=""))
+            block = chapter["blocks"]["ch01-p001"]
+            patch = self.post(
+                "/api/patch/manual",
+                {
+                    "file": "chapters/ch01.md",
+                    "blockId": "ch01-p001",
+                    "afterText": block["text"] + "\n门外的雾很低，像有人把城市的声音都压进了信封。",
+                },
+            )
+            preview = self.post("/api/patch/preview", {"patch": patch})
+            applied = self.post("/api/patch/apply", {"patch": patch})
+            audit = self.get("/api/audit")
+            chapter_text = (new_root / "chapters" / "ch01.md").read_text(encoding="utf-8")
+
+            self.assertEqual(created["plan"]["slug"], "new-book-flow")
+            self.assertTrue((new_root / "book.spec.md").exists())
+            self.assertIn("chapters/ch01.md", project["blocks"])
+            self.assertTrue(patch["validation"]["valid"], patch["validation"]["issues"])
+            self.assertIn("压进了信封", preview["diff"])
+            self.assertTrue(applied["applied"], applied)
+            self.assertIn("压进了信封", chapter_text)
+            self.assertIn("project.created", [event["type"] for event in audit["events"]])
+            self.assertIn("patch.applied", [event["type"] for event in audit["events"]])
+        finally:
+            self.base_url = old_base
+            new_server.shutdown()
+            new_server.server_close()
+            new_thread.join(timeout=2)
 
     def test_bad_chapter_path_returns_400(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as caught:

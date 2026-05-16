@@ -12,6 +12,7 @@ from .audit import AuditLog
 from .codex_client import CodexAppServerClient
 from .patch_engine import load_patch, make_annotation_patch
 from .project import load_project
+from .project_creator import create_book_project
 from .rule_engine import applicable_rules, propose_rules_from_annotations, rule_to_dict
 from .runtime import RuntimeOrchestrator
 from .skill_manager import build_skill_roots, discover_skills, resolve_skills
@@ -131,10 +132,27 @@ def cmd_codex_health(args: argparse.Namespace) -> int:
 def cmd_serve(args: argparse.Namespace) -> int:
     serve(
         args.project,
+        workspace_root=args.workspace,
         builtin_skills_root=args.skills_root,
         host=args.host,
         port=args.port,
         open_browser=args.open,
+    )
+    return 0
+
+
+def cmd_create_project(args: argparse.Namespace) -> int:
+    print_json(
+        create_book_project(
+            args.workspace,
+            title=args.title,
+            slug=args.slug,
+            genre=args.genre,
+            premise=args.premise,
+            style=args.style,
+            chapter_title=args.chapter_title,
+            opening_text=args.opening_text,
+        )
     )
     return 0
 
@@ -222,11 +240,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     serve_cmd = sub.add_parser("serve", help="Start the local browser app")
     _add_project_arg(serve_cmd)
+    serve_cmd.add_argument("--workspace", help="Workspace root for creating new projects; defaults to project parent")
     serve_cmd.add_argument("--skills-root")
     serve_cmd.add_argument("--host", default="127.0.0.1")
     serve_cmd.add_argument("--port", type=int, default=8765)
     serve_cmd.add_argument("--open", action="store_true", help="Open the app URL in the default browser")
     serve_cmd.set_defaults(func=cmd_serve)
+
+    create_project = sub.add_parser("create-project", help="Create a new BookWorkbench manuscript project")
+    create_project.add_argument("--workspace", required=True)
+    create_project.add_argument("--title", required=True)
+    create_project.add_argument("--slug")
+    create_project.add_argument("--genre", default="长篇小说")
+    create_project.add_argument("--premise", default="一个人在新的压力下重新确认自己的选择。")
+    create_project.add_argument("--style", default="冷静、具体，优先使用动作和场景压力表现人物变化。")
+    create_project.add_argument("--chapter-title", default="第一章")
+    create_project.add_argument("--opening-text", default="雨停后，街道像刚被人擦掉一层旧梦。")
+    create_project.set_defaults(func=cmd_create_project)
 
     return parser
 

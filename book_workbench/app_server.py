@@ -20,7 +20,9 @@ from urllib.parse import parse_qs, unquote, urlparse
 from .annotation_engine import annotation_to_dict, classification_summary, list_annotations
 from .audit import AuditLog
 from .codex_client import CodexAppServerClient
+from .patch_engine import validate_patch
 from .project import ProjectLoadError, load_project, safe_chapter_path
+from .project_creator import ProjectCreationError, create_book_project
 from .runtime import RuntimeErrorBase, RuntimeOrchestrator
 
 
@@ -59,6 +61,7 @@ INDEX_HTML = """<!doctype html>
       <h2>项目</h2>
       <button onclick="loadProject()">刷新项目</button>
       <button class="secondary" onclick="loadAudit()">查看审计</button>
+      <button class="secondary" onclick="createDemoBook()">新建一本测试书</button>
       <div id="chapters"></div>
       <h3>批注</h3>
       <div id="annotations"></div>
@@ -70,6 +73,7 @@ INDEX_HTML = """<!doctype html>
       <button onclick="previewPatch()">2. 预览 Diff</button>
       <button onclick="applyPatch()">3. 应用 Patch</button>
       <button class="secondary" onclick="loadChapter('chapters/ch05.md')">读取第五章</button>
+      <button class="secondary" onclick="reviseFirstChapter()">修改当前第一章</button>
       <h3>章节 / Diff / 结果</h3>
       <pre id="output"></pre>
       <h3>审计</h3>
@@ -140,6 +144,40 @@ INDEX_HTML = """<!doctype html>
       dump("output", await api("/api/patch/apply", { method: "POST", body: JSON.stringify({ patch: lastPatch }) }));
       await loadAudit();
     }
+    async function createDemoBook() {
+      const result = await api("/api/projects/create", {
+        method: "POST",
+        body: JSON.stringify({
+          title: "雾中来信",
+          slug: "demo-book",
+          openingText: "清晨六点，邮差把一封没有寄件人的信放在门缝里。"
+        })
+      });
+      dump("output", result);
+      alert("已创建：" + result.root + "\\n用 serve --project 打开这个新项目即可继续编辑。");
+    }
+    async function reviseFirstChapter() {
+      const project = await api("/api/project");
+      const file = Object.keys(project.blocks)[0] || "chapters/ch01.md";
+      const chapter = await api("/api/chapters/" + encodeURIComponent(file));
+      const blockId = chapter.blockIds[0];
+      const block = chapter.blocks[blockId];
+      const patch = {
+        id: "PP-manual-first-chapter",
+        summary: "手动修改第一章开头，验证新书项目可编辑。",
+        sourceAnnotations: ["USER-manual-edit"],
+        changes: [{
+          file,
+          targetBlockId: blockId,
+          operation: "replace_block",
+          beforeHash: block.before_hash,
+          afterText: block.text + "\\n门外的雾很低，像有人把城市的声音都压进了信封。",
+          reason: "manual app smoke edit"
+        }]
+      };
+      lastPatch = patch;
+      dump("output", await api("/api/patch/preview", { method: "POST", body: JSON.stringify({ patch }) }));
+    }
     async function loadAudit() { dump("audit", await api("/api/audit")); }
     loadHealth().then(loadProject).catch(error => dump("output", { error: String(error) }));
   </script>
@@ -153,10 +191,12 @@ class RuntimeWebApp:
         self,
         project_root: str | Path,
         *,
+        workspace_root: str | Path | None = None,
         builtin_skills_root: str | Path | None = None,
         codex_client: CodexAppServerClient | None = None,
     ) -> None:
         self.project_root = Path(project_root).resolve()
+        self.workspace_root = Path(workspace_root).resolve() if workspace_root is not None else self.project_root.parent
         self.runtime = RuntimeOrchestrator(self.project_root, builtin_skills_root=builtin_skills_root)
         self.codex_client = codex_client or CodexAppServerClient(cwd=self.project_root)
         self._lock = threading.RLock()
@@ -238,6 +278,45 @@ class RuntimeWebApp:
         with self._lock:
             return self.runtime.accept_patch(patch, allow_reviewed=_bool_payload(payload, "allowReviewed") or _bool_payload(payload, "allow_reviewed"))
 
+    def create_project(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        result = create_book_project(
+            self.workspace_root,
+            title=_required_string(payload, "title"),
+            slug=_optional_string(payload, "slug"),
+            genre=_optional_string(payload, "genre") or "长篇小说",
+            premise=_optional_string(payload, "premise") or "一个人在新的压力下重新确认自己的选择。",
+            style=_optional_string(payload, "style") or "冷静、具体，优先使用动作和场景压力表现人物变化。",
+            chapter_title=_optional_string(payload, "chapterTitle") or "第一章",
+            opening_text=_optional_string(payload, "openingText") or "雨停后，街道像刚被人擦掉一层旧梦。",
+        )
+        AuditLog(result["root"]).append({"type": "project.created", "title": result["plan"]["title"]})
+        return result
+
+    def manual_edit_patch(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        file_path = _required_string(payload, "file")
+        block_id = _required_string(payload, "blockId")
+        after_text = _required_string(payload, "afterText")
+        context = load_project(self.project_root)
+        block = context.block(file_path, block_id)
+        patch = {
+            "id": f"PP-manual-{block_id}",
+            "summary": "Manual app edit proposal.",
+            "sourceAnnotations": ["USER-manual-edit"],
+            "changes": [
+                {
+                    "file": file_path,
+                    "targetBlockId": block_id,
+                    "operation": "replace_block",
+                    "beforeHash": block.before_hash,
+                    "afterText": after_text,
+                    "reason": _optional_string(payload, "reason") or "manual app edit",
+                }
+            ],
+        }
+        validation = validate_patch(context, patch)
+        patch["validation"] = {"valid": validation.valid, "issues": [issue.__dict__ for issue in validation.issues]}
+        return patch
+
     def audit(self) -> Dict[str, Any]:
         return {"events": AuditLog(self.project_root).read()}
 
@@ -292,6 +371,10 @@ class BookWorkbenchHandler(BaseHTTPRequestHandler):
                 self._send_json(self.app.preview_patch(payload))
             elif parsed.path in {"/api/patch/apply", "/api/patches/apply"}:
                 self._send_json(self.app.apply_patch(payload))
+            elif parsed.path == "/api/projects/create":
+                self._send_json(self.app.create_project(payload))
+            elif parsed.path == "/api/patch/manual":
+                self._send_json(self.app.manual_edit_patch(payload))
             elif parsed.path == "/api/codex/health":
                 self._send_json({"codex": self.app.codex_client.health()})
             else:
@@ -342,7 +425,7 @@ class BookWorkbenchHandler(BaseHTTPRequestHandler):
         self._send_json({"error": message, "status": status.value}, status=status)
 
     def _send_exception(self, exc: Exception) -> None:
-        if isinstance(exc, (ValueError, KeyError, json.JSONDecodeError, ProjectLoadError, RuntimeErrorBase)):
+        if isinstance(exc, (ValueError, KeyError, json.JSONDecodeError, ProjectLoadError, ProjectCreationError, RuntimeErrorBase)):
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
         else:
             self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
@@ -406,6 +489,7 @@ class BookWorkbenchHandler(BaseHTTPRequestHandler):
 def create_server(
     project_root: str | Path,
     *,
+    workspace_root: str | Path | None = None,
     builtin_skills_root: str | Path | None = None,
     host: str = "127.0.0.1",
     port: int = 8765,
@@ -413,7 +497,12 @@ def create_server(
     local_token: str | None = None,
     quiet: bool = False,
 ) -> ThreadingHTTPServer:
-    app = RuntimeWebApp(project_root, builtin_skills_root=builtin_skills_root, codex_client=codex_client)
+    app = RuntimeWebApp(
+        project_root,
+        workspace_root=workspace_root,
+        builtin_skills_root=builtin_skills_root,
+        codex_client=codex_client,
+    )
     server = ThreadingHTTPServer((host, port), BookWorkbenchHandler)
     server.app = app  # type: ignore[attr-defined]
     server.local_token = local_token if local_token is not None else secrets.token_urlsafe(24)  # type: ignore[attr-defined]
@@ -424,12 +513,19 @@ def create_server(
 def serve(
     project_root: str | Path,
     *,
+    workspace_root: str | Path | None = None,
     builtin_skills_root: str | Path | None = None,
     host: str = "127.0.0.1",
     port: int = 8765,
     open_browser: bool = False,
 ) -> None:
-    server = create_server(project_root, builtin_skills_root=builtin_skills_root, host=host, port=port)
+    server = create_server(
+        project_root,
+        workspace_root=workspace_root,
+        builtin_skills_root=builtin_skills_root,
+        host=host,
+        port=port,
+    )
     actual_host, actual_port = server.server_address[:2]
     url = f"http://{actual_host}:{actual_port}/"
     print(f"{APP_TITLE} running at {url}", flush=True)
