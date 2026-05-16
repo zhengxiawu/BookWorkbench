@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, List, Tuple
 
 from .models import ProjectContext, ValidationIssue, ValidationResult
+from .project import ProjectLoadError, safe_chapter_path
 
 MANUSCRIPT_FILE_PREFIX = "chapters/"
+VALID_OPERATIONS = {"replace_block", "insert_before_block", "insert_after_block", "delete_block"}
+INSERT_OPERATIONS = {"insert_before_block", "insert_after_block"}
 
 
 class PatchError(RuntimeError):
@@ -20,19 +24,36 @@ def load_patch(path: str | Path) -> Dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
-def validate_patch(context: ProjectContext, patch: Dict, *, allow_reviewed: bool = False) -> ValidationResult:
+def _validation_issue(code: str, message: str) -> ValidationIssue:
+    return ValidationIssue(code, message)
+
+
+def validate_patch(context: ProjectContext, patch: object, *, allow_reviewed: bool = False) -> ValidationResult:
     issues: List[ValidationIssue] = []
     touches_locked = False
     touches_reviewed = False
+    seen_targets: dict[Tuple[str, str], int] = {}
+
+    if not isinstance(patch, dict):
+        return ValidationResult(
+            valid=False,
+            issues=[_validation_issue("invalid_patch", "PatchProposal must be an object.")],
+        )
 
     for field in ("id", "sourceAnnotations", "changes", "summary"):
         if field not in patch:
-            issues.append(ValidationIssue("missing_field", f"PatchProposal is missing required field: {field}"))
+            issues.append(_validation_issue("missing_field", f"PatchProposal is missing required field: {field}"))
+    for field in ("id", "summary"):
+        if field in patch and not isinstance(patch[field], str):
+            issues.append(_validation_issue("invalid_field_type", f"PatchProposal field {field} must be a string."))
 
     source_annotations = patch.get("sourceAnnotations", [])
+    if not isinstance(source_annotations, list):
+        issues.append(_validation_issue("invalid_sources", "sourceAnnotations must be an array."))
+        source_annotations = []
     if not source_annotations:
         issues.append(
-            ValidationIssue(
+            _validation_issue(
                 "missing_sources",
                 "PatchProposal must cite at least one source annotation or explicit user instruction.",
             )
@@ -40,82 +61,135 @@ def validate_patch(context: ProjectContext, patch: Dict, *, allow_reviewed: bool
 
     known_annotation_ids = {annotation.id for annotation in context.annotations}
     for annotation_id in source_annotations:
+        if not isinstance(annotation_id, str):
+            issues.append(_validation_issue("invalid_source_annotation", f"Source annotation must be a string: {annotation_id!r}"))
+            continue
         if annotation_id.startswith("USER-") or annotation_id in known_annotation_ids:
             continue
-        issues.append(
-            ValidationIssue(
-                "unknown_source_annotation",
-                f"Unknown source annotation: {annotation_id}",
-            )
-        )
+        issues.append(_validation_issue("unknown_source_annotation", f"Unknown source annotation: {annotation_id}"))
 
     changes = patch.get("changes", [])
     if not isinstance(changes, list) or not changes:
-        issues.append(ValidationIssue("empty_changes", "PatchProposal must include at least one change."))
+        issues.append(_validation_issue("empty_changes", "PatchProposal must include at least one change."))
         changes = []
 
     for index, change in enumerate(changes):
         prefix = f"changes[{index}]"
+        if not isinstance(change, dict):
+            issues.append(_validation_issue("invalid_change", f"{prefix} must be an object."))
+            continue
         for field in ("file", "targetBlockId", "operation", "beforeHash", "afterText", "reason"):
             if field not in change:
-                issues.append(ValidationIssue("missing_change_field", f"{prefix} is missing required field: {field}"))
-        file_path = change.get("file")
-        block_id = change.get("targetBlockId")
-        operation = change.get("operation")
-        before_hash = change.get("beforeHash")
-        after_text = change.get("afterText", "")
+                issues.append(_validation_issue("missing_change_field", f"{prefix} is missing required field: {field}"))
 
-        if operation not in {"replace_block", "insert_before_block", "insert_after_block", "delete_block"}:
-            issues.append(ValidationIssue("invalid_operation", f"{prefix} has invalid operation: {operation}"))
+        invalid_change_shape = False
+        for field in ("file", "targetBlockId", "operation", "beforeHash", "afterText", "reason"):
+            if field in change and not isinstance(change[field], str):
+                invalid_change_shape = True
+                issues.append(_validation_issue("invalid_change_field_type", f"{prefix}.{field} must be a string."))
+        if "requiresSecondaryApproval" in change and not isinstance(change["requiresSecondaryApproval"], bool):
+            invalid_change_shape = True
+            issues.append(_validation_issue("invalid_change_field_type", f"{prefix}.requiresSecondaryApproval must be a boolean."))
+        if invalid_change_shape or any(field not in change for field in ("file", "targetBlockId", "operation", "beforeHash", "afterText", "reason")):
+            continue
 
-        if not isinstance(file_path, str) or not file_path.startswith(MANUSCRIPT_FILE_PREFIX):
+        file_path = change["file"]
+        block_id = change["targetBlockId"]
+        operation = change["operation"]
+        before_hash = change["beforeHash"]
+        after_text = change["afterText"]
+        target_key = (file_path, block_id)
+
+        if target_key in seen_targets:
             issues.append(
-                ValidationIssue(
+                _validation_issue(
+                    "duplicate_target_block",
+                    f"{prefix} targets the same block as changes[{seen_targets[target_key]}]: {file_path}#{block_id}",
+                )
+            )
+        else:
+            seen_targets[target_key] = index
+
+        if operation not in VALID_OPERATIONS:
+            issues.append(_validation_issue("invalid_operation", f"{prefix} has invalid operation: {operation}"))
+
+        if (
+            not isinstance(file_path, str)
+            or not file_path.startswith(MANUSCRIPT_FILE_PREFIX)
+            or Path(file_path).suffix != ".md"
+            or ".." in Path(file_path).parts
+            or Path(file_path).is_absolute()
+        ):
+            issues.append(
+                _validation_issue(
                     "forbidden_file",
                     f"{prefix} targets a forbidden file. MVP patching is limited to chapters/*.md.",
                 )
             )
             continue
-
         status = context.status_for_file(file_path)
         if status == "locked":
             touches_locked = True
-            issues.append(ValidationIssue("locked_chapter", f"{prefix} targets locked chapter: {file_path}"))
+            issues.append(_validation_issue("locked_chapter", f"{prefix} targets locked chapter: {file_path}"))
         if status == "reviewed":
             touches_reviewed = True
             if not allow_reviewed:
                 issues.append(
-                    ValidationIssue(
+                    _validation_issue(
                         "reviewed_chapter_requires_secondary_approval",
                         f"{prefix} targets reviewed chapter without secondary approval: {file_path}",
                     )
                 )
             if change.get("requiresSecondaryApproval") is not True:
                 issues.append(
-                    ValidationIssue(
+                    _validation_issue(
                         "reviewed_change_not_marked",
                         f"{prefix} must set requiresSecondaryApproval=true for reviewed chapter: {file_path}",
                     )
                 )
 
+        try:
+            safe_chapter_path(context.root, file_path)
+        except ProjectLoadError:
+            issues.append(
+                _validation_issue(
+                    "forbidden_file",
+                    f"{prefix} targets a forbidden file. MVP patching is limited to real chapters/*.md files.",
+                )
+            )
+            continue
+
         file_blocks = context.blocks.get(file_path)
         if not file_blocks:
-            issues.append(ValidationIssue("unknown_file", f"{prefix} targets unknown file: {file_path}"))
+            issues.append(_validation_issue("unknown_file", f"{prefix} targets unknown file: {file_path}"))
             continue
         block = file_blocks.get(str(block_id))
         if not block:
-            issues.append(ValidationIssue("unknown_block", f"{prefix} targets unknown block: {block_id}"))
+            issues.append(_validation_issue("unknown_block", f"{prefix} targets unknown block: {block_id}"))
             continue
         if before_hash != block.before_hash:
             issues.append(
-                ValidationIssue(
+                _validation_issue(
                     "hash_mismatch",
                     f"{prefix} beforeHash {before_hash!r} does not match current block hash {block.before_hash!r}.",
                 )
             )
+        if operation == "delete_block" and after_text:
+            issues.append(_validation_issue("delete_after_text", f"{prefix} delete_block must use empty afterText."))
+        if operation in INSERT_OPERATIONS and not str(after_text).strip():
+            issues.append(_validation_issue("empty_insert_text", f"{prefix} {operation} must include afterText for the inserted block."))
+        if operation in INSERT_OPERATIONS:
+            generated_id = generated_insert_block_id(str(block_id), str(after_text))
+            if generated_id in file_blocks:
+                issues.append(
+                    _validation_issue(
+                        "generated_anchor_conflict",
+                        f"{prefix} generated inserted block id already exists: {generated_id}",
+                    )
+                )
         if "mw:block" in str(after_text):
             issues.append(
-                ValidationIssue(
+                _validation_issue(
                     "anchor_in_after_text",
                     f"{prefix} afterText must not contain block anchors; anchors are preserved by the patch engine.",
                 )
@@ -127,6 +201,19 @@ def validate_patch(context: ProjectContext, patch: Dict, *, allow_reviewed: bool
         touches_locked=touches_locked,
         touches_reviewed=touches_reviewed,
     )
+
+
+def _short_text_hash(text: str, *, length: int = 8) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:length]
+
+
+def generated_insert_block_id(target_block_id: str, after_text: str) -> str:
+    return f"{target_block_id}-ins-{_short_text_hash(after_text)}"
+
+
+def generated_insert_anchor(target_block_id: str, after_text: str) -> str:
+    block_id = generated_insert_block_id(target_block_id, after_text)
+    return f"<!-- mw:block id={block_id} hash=sha256:{_short_text_hash(after_text, length=6)} -->"
 
 
 def _replacement_lines(anchor: str, after_text: str, *, trailing_blank: bool = False) -> List[str]:
@@ -142,13 +229,15 @@ def _apply_change_to_lines(context: ProjectContext, lines: List[str], change: Di
     start = block.anchor_line - 1 + line_offset
     end = block.end_line + line_offset
     original_had_trailing_blank = end > start and lines[end - 1] == ""
+    operation = change["operation"]
+    after_text = change.get("afterText", "")
+    anchor = generated_insert_anchor(block.id, after_text) if operation in INSERT_OPERATIONS else block.anchor
     replacement = _replacement_lines(
-        block.anchor,
-        change.get("afterText", ""),
-        trailing_blank=original_had_trailing_blank,
+        anchor,
+        after_text,
+        trailing_blank=original_had_trailing_blank and operation not in INSERT_OPERATIONS,
     )
 
-    operation = change["operation"]
     if operation == "replace_block":
         new_lines = [*lines[:start], *replacement, *lines[end:]]
         return new_lines, len(replacement) - (end - start)
@@ -165,8 +254,8 @@ def _apply_change_to_lines(context: ProjectContext, lines: List[str], change: Di
 
 
 def proposed_file_text(context: ProjectContext, patch: Dict, file_path: str) -> str:
-    full_path = context.root / file_path
-    lines = full_path.read_text(encoding="utf-8").splitlines()
+    chapter_path = safe_chapter_path(context.root, file_path)
+    lines = chapter_path.read_text(encoding="utf-8").splitlines()
     file_changes = [change for change in patch.get("changes", []) if change.get("file") == file_path]
     file_changes.sort(key=lambda change: context.block(file_path, change["targetBlockId"]).anchor_line)
     offset = 0
@@ -180,7 +269,7 @@ def preview_diff(context: ProjectContext, patch: Dict) -> str:
     files = sorted({change["file"] for change in patch.get("changes", [])})
     hunks: List[str] = []
     for file_path in files:
-        original = (context.root / file_path).read_text(encoding="utf-8")
+        original = safe_chapter_path(context.root, file_path).read_text(encoding="utf-8")
         proposed = proposed_file_text(context, patch, file_path)
         hunks.extend(
             difflib.unified_diff(
@@ -193,22 +282,27 @@ def preview_diff(context: ProjectContext, patch: Dict) -> str:
     return "".join(hunks)
 
 
-def apply_patch(context: ProjectContext, patch: Dict, *, allow_reviewed: bool = False) -> ValidationResult:
+def apply_patch(
+    context: ProjectContext,
+    patch: Dict,
+    *,
+    allow_reviewed: bool = False,
+) -> ValidationResult:
     result = validate_patch(context, patch, allow_reviewed=allow_reviewed)
     if not result.valid:
         return result
-    for file_path in sorted({change["file"] for change in patch.get("changes", [])}):
-        (context.root / file_path).write_text(proposed_file_text(context, patch, file_path), encoding="utf-8")
+    files = sorted({change["file"] for change in patch.get("changes", [])})
+    for file_path in files:
+        safe_chapter_path(context.root, file_path).write_text(proposed_file_text(context, patch, file_path), encoding="utf-8")
     return result
 
 
 def make_annotation_patch(context: ProjectContext, annotation_id: str) -> Dict:
-    """Generate a conservative demo patch for a style annotation.
+    """Generate a conservative deterministic patch for a style annotation.
 
-    This is intentionally deterministic and narrow: it only handles the sample
-    "show through action, not inner explanation" annotation. In real app-server
-    usage, Codex would produce PatchProposal JSON and this module would validate
-    and preview/apply it.
+    In real app-server usage, Codex would produce PatchProposal JSON and this
+    module would validate, preview, and apply it. This helper exists to keep the
+    sample Runtime MVP runnable without a model dependency.
     """
 
     annotation = next((item for item in context.annotations if item.id == annotation_id), None)
@@ -223,10 +317,7 @@ def make_annotation_patch(context: ProjectContext, annotation_id: str) -> Dict:
         and (not rule.apply_to or status in rule.apply_to)
         and status not in rule.exclude
     ]
-    if not rules:
-        rules_used: List[str] = []
-    else:
-        rules_used = [rules[0].id]
+    rules_used = [rules[0].id] if rules else []
 
     after_text = "我坐在审讯室里，盯着对面的男人。他没有看我，只把纸杯沿一点点捏扁。"
     return {

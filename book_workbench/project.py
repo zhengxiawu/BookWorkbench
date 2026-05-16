@@ -73,12 +73,53 @@ def _load_rules(path: Path) -> List[Rule]:
     ]
 
 
+def _safe_project_file(root: Path, file_path: str) -> Path:
+    project_root = root.resolve()
+    full_path = (root / file_path).resolve()
+    if project_root not in full_path.parents and full_path != project_root:
+        raise ProjectLoadError(f"Project metadata references a path outside the project: {file_path}")
+    return full_path
+
+
+def safe_chapter_path(root: Path, file_path: str) -> Path:
+    """Return an allowed real chapter path or raise ProjectLoadError.
+
+    Runtime patching is intentionally limited to real Markdown files directly
+    under ``chapters/``. Resolving the path here blocks both lexical traversal
+    and symlink escapes before a preview/apply transaction can read or write.
+    """
+
+    if not isinstance(file_path, str):
+        raise ProjectLoadError(f"Chapter path must be a string: {file_path!r}")
+    candidate = root / file_path
+    if candidate.is_symlink():
+        raise ProjectLoadError(f"Chapter path must not be a symlink: {file_path}")
+    chapter_path = _safe_project_file(root, file_path)
+    chapters_root = (root / "chapters").resolve()
+    if chapter_path.parent != chapters_root:
+        raise ProjectLoadError(f"Chapter path must be a direct chapters/*.md file: {file_path}")
+    if chapter_path.suffix != ".md":
+        raise ProjectLoadError(f"Chapter path must be Markdown: {file_path}")
+    if not chapter_path.is_file():
+        raise ProjectLoadError(f"Chapter path must be a file: {file_path}")
+    return chapter_path
+
+
 def _chapter_files(root: Path, annotations: Iterable[Annotation], chapter_status: Dict[str, str]) -> List[Path]:
-    files = {root / file_path for file_path in chapter_status}
-    files.update(root / annotation.file for annotation in annotations)
+    files = set()
+    for file_path in chapter_status:
+        try:
+            files.add(safe_chapter_path(root, file_path))
+        except ProjectLoadError:
+            continue
+    for annotation in annotations:
+        try:
+            files.add(safe_chapter_path(root, annotation.file))
+        except ProjectLoadError:
+            continue
     chapters_dir = root / "chapters"
     if chapters_dir.exists():
-        files.update(chapters_dir.glob("*.md"))
+        files.update(file for file in chapters_dir.glob("*.md") if not file.is_symlink() and file.is_file())
     return sorted(file for file in files if file.exists())
 
 
