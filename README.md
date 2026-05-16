@@ -31,8 +31,10 @@ The current implementation focuses on the safety-critical loop described by the 
 7. Preview unified diffs without editing manuscripts.
 8. Apply only validated patches while preserving `mw:block` anchors.
 9. Write JSONL audit events for runtime runs and patch preview/apply/reject.
+10. Open a local browser app that exercises the same Runtime safety boundary.
+11. Check a local Codex `app-server` process with a real bounded `initialize` handshake.
 
-It intentionally does **not** call an external model or real Codex app-server yet. In the intended architecture, Codex app-server produces structured proposal JSON; this Runtime validates, previews, applies, audits, and commits it.
+It intentionally does **not** send manuscript edits through a model yet. In the intended architecture, Codex app-server produces structured proposal JSON; this Runtime validates, previews, applies, audits, and commits it. The current app-server seam verifies that Codex app-server can be launched and initialized locally.
 
 ## Quick start
 
@@ -67,6 +69,46 @@ python3 -m book_workbench.cli run-skill \
   --skills-root manuscript_runtime_codex_appserver_v2/skills \
   --skill revise-with-annotations \
   --annotation AN-041
+```
+
+Open the local app against a temporary copy:
+
+```bash
+tmpdir="$(mktemp -d)"
+cp -R manuscript_runtime_codex_appserver_v2/sample_project "$tmpdir/sample_project"
+python3 -m book_workbench.cli serve \
+  --project "$tmpdir/sample_project" \
+  --skills-root manuscript_runtime_codex_appserver_v2/skills \
+  --port 8765 \
+  --open
+```
+
+Then use the browser buttons to:
+
+1. run `revise-with-annotations`
+2. preview the unified diff
+3. apply the validated patch
+4. inspect the audit trail
+
+The same operations are available through JSON endpoints:
+
+- `GET /api/health` — local app, Runtime, and Codex app-server initialize health
+- `GET /api/project`
+- `GET /api/chapters/<url-encoded chapters/path.md>`
+- `GET /api/annotations`
+- `POST /api/skills/run`
+- `POST /api/patch/preview`
+- `POST /api/patch/apply`
+- `GET /api/audit`
+
+State-changing `POST` endpoints require the per-server token printed by
+`serve` as `X-BookWorkbench-Token` (or `Authorization: Bearer <token>`). Keep
+`--host` on loopback unless you intentionally accept local-network risk.
+
+Check Codex app-server health directly:
+
+```bash
+python3 -m book_workbench.cli codex-health --timeout 5
 ```
 
 Generate, validate, and preview a sample patch:

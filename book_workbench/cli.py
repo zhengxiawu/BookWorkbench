@@ -7,7 +7,9 @@ import json
 import sys
 
 from .annotation_engine import annotation_to_dict, classification_summary, list_annotations
+from .app_server import serve
 from .audit import AuditLog
+from .codex_client import CodexAppServerClient
 from .patch_engine import load_patch, make_annotation_patch
 from .project import load_project
 from .rule_engine import applicable_rules, propose_rules_from_annotations, rule_to_dict
@@ -120,6 +122,23 @@ def cmd_audit(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_codex_health(args: argparse.Namespace) -> int:
+    command = args.command if args.command else ["codex", "app-server"]
+    print_json(CodexAppServerClient(command=command, timeout_seconds=args.timeout, cwd=args.cwd).health())
+    return 0
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    serve(
+        args.project,
+        builtin_skills_root=args.skills_root,
+        host=args.host,
+        port=args.port,
+        open_browser=args.open,
+    )
+    return 0
+
+
 def _add_project_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project", required=True)
 
@@ -190,6 +209,24 @@ def build_parser() -> argparse.ArgumentParser:
     audit = sub.add_parser("audit", help="Read the project audit log")
     _add_project_arg(audit)
     audit.set_defaults(func=cmd_audit)
+
+    codex_health = sub.add_parser("codex-health", help="Check local Codex app-server initialize health")
+    codex_health.add_argument("--timeout", type=float, default=5.0)
+    codex_health.add_argument("--cwd")
+    codex_health.add_argument(
+        "--command",
+        nargs="+",
+        help="Override command, default: codex app-server",
+    )
+    codex_health.set_defaults(func=cmd_codex_health)
+
+    serve_cmd = sub.add_parser("serve", help="Start the local browser app")
+    _add_project_arg(serve_cmd)
+    serve_cmd.add_argument("--skills-root")
+    serve_cmd.add_argument("--host", default="127.0.0.1")
+    serve_cmd.add_argument("--port", type=int, default=8765)
+    serve_cmd.add_argument("--open", action="store_true", help="Open the app URL in the default browser")
+    serve_cmd.set_defaults(func=cmd_serve)
 
     return parser
 
