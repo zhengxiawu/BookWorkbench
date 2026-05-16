@@ -10,7 +10,7 @@ from .annotation_engine import annotation_to_dict, classification_summary, list_
 from .app_server import serve
 from .audit import AuditLog
 from .codex_client import CodexAppServerClient
-from .patch_engine import load_patch, make_annotation_patch
+from .patch_engine import load_patch, make_annotation_patch, validate_patch as validate_patch_proposal
 from .project import load_project
 from .project_creator import create_book_project
 from .rule_engine import applicable_rules, propose_rules_from_annotations, rule_to_dict
@@ -129,6 +129,59 @@ def cmd_codex_health(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_codex_skills(args: argparse.Namespace) -> int:
+    command = args.command if args.command else ["codex", "app-server"]
+    scan_cwds = args.cwd or []
+    process_cwd = scan_cwds[0] if scan_cwds else None
+    result = CodexAppServerClient(command=command, timeout_seconds=args.timeout, cwd=process_cwd).list_skills(
+        cwds=scan_cwds,
+        force_reload=not args.no_force_reload,
+    )
+    print_json(result)
+    return 0 if result.get("ok") else 1
+
+
+def cmd_codex_probe(args: argparse.Namespace) -> int:
+    command = args.command if args.command else ["codex", "app-server"]
+    prompt = args.prompt or 'Return exactly JSON: {"ok": true, "source": "codex-app-server"}'
+    result = CodexAppServerClient(command=command, timeout_seconds=args.timeout, cwd=args.cwd).run_probe_turn(
+        prompt=prompt,
+        cwd=args.cwd,
+    )
+    print_json(result)
+    return 0 if result.get("ok") else 1
+
+
+def cmd_codex_patch_probe(args: argparse.Namespace) -> int:
+    command = args.command if args.command else ["codex", "app-server"]
+    prompt = args.prompt or (
+        'Return exactly this JSON object and no markdown: '
+        '{"id":"PP-probe","summary":"probe only","sourceAnnotations":["USER-codex-probe"],"rulesUsed":[],"changes":[]}'
+    )
+
+    def validate(proposal: object) -> dict:
+        if not isinstance(proposal, dict):
+            return {"valid": False, "issues": [{"code": "invalid_patch", "message": "not an object"}]}
+        if not args.project:
+            required = {"id", "summary", "sourceAnnotations", "rulesUsed", "changes"}
+            missing = sorted(required - set(proposal))
+            return {
+                "valid": not missing,
+                "issues": [{"code": "missing_field", "message": f"missing {field}"} for field in missing],
+                "shapeOnly": True,
+            }
+        result = validate_patch_proposal(load_project(args.project), proposal)
+        return {"valid": result.valid, "issues": [issue.__dict__ for issue in result.issues]}
+
+    result = CodexAppServerClient(command=command, timeout_seconds=args.timeout, cwd=args.cwd or args.project).run_patch_proposal_turn(
+        prompt=prompt,
+        cwd=args.cwd or args.project,
+        patch_validator=validate,
+    )
+    print_json(result)
+    return 0 if result.get("ok") else 1
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     if args.project is None and args.workspace is None:
         parser_workspace_error = "serve requires --workspace for empty workspace mode or --project for direct project mode"
@@ -240,6 +293,40 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override command, default: codex app-server",
     )
     codex_health.set_defaults(func=cmd_codex_health)
+
+    codex_skills = sub.add_parser("codex-skills", help="List real Codex app-server skills for explicit cwd scopes")
+    codex_skills.add_argument("--timeout", type=float, default=5.0)
+    codex_skills.add_argument("--cwd", action="append", default=[], help="CWD whose project-local .codex/skills should be scanned; repeatable")
+    codex_skills.add_argument("--no-force-reload", action="store_true")
+    codex_skills.add_argument(
+        "--command",
+        nargs=argparse.REMAINDER,
+        help="Override command, default: codex app-server",
+    )
+    codex_skills.set_defaults(func=cmd_codex_skills)
+
+    codex_probe = sub.add_parser("codex-probe", help="Run a real read-only Codex app-server thread/turn probe")
+    codex_probe.add_argument("--timeout", type=float, default=15.0)
+    codex_probe.add_argument("--cwd", default=".")
+    codex_probe.add_argument("--prompt")
+    codex_probe.add_argument(
+        "--command",
+        nargs=argparse.REMAINDER,
+        help="Override command, default: codex app-server",
+    )
+    codex_probe.set_defaults(func=cmd_codex_probe)
+
+    codex_patch_probe = sub.add_parser("codex-patch-probe", help="Run a real read-only Codex turn and validate PatchProposal JSON output")
+    codex_patch_probe.add_argument("--timeout", type=float, default=15.0)
+    codex_patch_probe.add_argument("--cwd")
+    codex_patch_probe.add_argument("--project", help="Optional project used for Runtime PatchProposal validation")
+    codex_patch_probe.add_argument("--prompt")
+    codex_patch_probe.add_argument(
+        "--command",
+        nargs=argparse.REMAINDER,
+        help="Override command, default: codex app-server",
+    )
+    codex_patch_probe.set_defaults(func=cmd_codex_patch_probe)
 
     serve_cmd = sub.add_parser("serve", help="Start the local browser app")
     serve_cmd.add_argument("--project", help="Open this project immediately; omit for empty workspace mode")

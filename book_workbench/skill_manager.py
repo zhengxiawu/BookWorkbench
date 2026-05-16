@@ -104,7 +104,10 @@ def build_skill_roots(
 ) -> Dict[str, str | Path | None]:
     project_root = Path(project_root)
     return {
-        "project": project_root / ".agents" / "skills",
+        # Codex app-server loads repo/project skills from .codex/skills.
+        # Keep this project-local so BookWorkbench manuscripts do not pollute
+        # user/global Codex skill directories.
+        "project": project_root / ".codex" / "skills",
         "user": user_root,
         "builtin": builtin_root,
         "codex": codex_root,

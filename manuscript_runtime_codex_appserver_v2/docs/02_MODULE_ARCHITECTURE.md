@@ -103,7 +103,7 @@ interface CodexAppServerClient {
 
 - 加载 App 内置 Skill 库。
 - 加载用户自定义 Skill。
-- 加载项目 `.agents/skills`。
+- 加载项目 `.codex/skills`（项目级 Codex skills，不写全局目录）。
 - 读取 Codex 可用 skills list。
 - 管理 scope：builtin / project / user / codex / remote。
 - 生成给 app-server 的 skill input item。

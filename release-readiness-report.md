@@ -13,11 +13,14 @@ The app now starts in workspace mode with no preloaded novel. Users see an empty
 | Area | Result | Evidence |
 | --- | --- | --- |
 | Python compile | PASS | `python3 -m compileall -q book_workbench tests scripts` |
-| Unit/integration tests | PASS | `python3 -m unittest discover -s tests -v` — 54 tests |
+| Unit/integration tests | PASS | `python3 -m unittest discover -s tests -v` — 62 tests |
 | Browser E2E | PASS | `python3 scripts/browser_e2e.py` |
 | JS syntax | PASS | extracted served script checked by `node --check` inside app-server tests |
 | Diff hygiene | PASS | `git diff --check` |
 | Codex app-server health | PASS | `python3 -m book_workbench.cli codex-health --timeout 3` returned `ok: true` |
+| Real Codex app-server turn stream | PASS | `python3 -m book_workbench.cli codex-probe --timeout 60 --cwd .` observed `thread/started`, `turn/started`, `item/agentMessage/delta`, `item/completed`, `turn/completed` |
+| Real Codex PatchProposal probe | PASS | `python3 -m book_workbench.cli codex-patch-probe --timeout 30 --cwd .` returned JSON proposal and shape validator result; project-scoped app endpoint uses Runtime validation |
+| Project-local Codex skills | PASS | New projects scaffold `.codex/skills/*/SKILL.md`; `codex skills/list` sees them as `scope: repo`; tests assert no global `~/.codex/skills` writes |
 | CLI workspace create | PASS | `create-project` with empty opening text creates a blank first chapter |
 
 Browser artifacts are saved under `.omx/evidence/browser-e2e/`:
@@ -33,6 +36,14 @@ Browser artifacts are saved under `.omx/evidence/browser-e2e/`:
 - `09-fixture-after-accept-commit.png`
 - `console.json` — `[]`
 - `page-errors.json` — `[]`
+- `summary.json` — `ok: true`
+
+Codex app-server evidence is saved under `.omx/evidence/codex-appserver-2026-05-16/`:
+
+- `codex-health.json` — initialize health
+- `codex-probe.json` — real read-only thread/turn stream
+- `codex-patch-probe.json` — real read-only PatchProposal JSON parse + shape validation
+- `codex-skills-project.json` — project `.codex/skills` loaded as Codex `repo` scope
 - `summary.json` — `ok: true`
 
 
@@ -91,10 +102,18 @@ Post-create UX regression evidence is saved under `.omx/evidence/post-create-ux-
 
 A true OpenAI Computer Use action tool is **not exposed in this local Codex tool environment**, so this run used Playwright browser actions as the safe local UI harness. The E2E script records screenshots and validates backend state/files/Git commits; it does not rely on screenshot-only self-reporting.
 
+## Codex app-server and Skill scope update
+
+- Earlier QA was correct: before this pass, BookWorkbench only health-checked `initialize` and `/api/skills/run` used deterministic Runtime skills.
+- This pass adds a real app-server verification path: `initialize` → `thread/start` → `turn/start` → stream event capture → `turn/completed`. It is read-only/ephemeral and does not write manuscript files.
+- This pass also adds a real PatchProposal probe: Codex final text is parsed as JSON, the CLI probe verifies required PatchProposal shape, and the project-scoped app endpoint wires parsed proposals through Runtime validation before preview/apply.
+- App endpoints `/api/codex/skills`, `/api/codex/probe`, and `/api/codex/patch-probe` are project-scoped and route approval requests through Runtime policy.
+- New BookWorkbench projects get only project-local skills under `.codex/skills/`; the app does not create or modify `~/.codex/skills`. Runtime discovery now uses the same `.codex/skills` project scope as Codex app-server.
+
 ## Known residual risks
 
-- DOCX/PDF import/export roundtrip, large-project stress, crash recovery, and real model Skill Evals are not implemented in this MVP pass.
-- Codex app-server is currently health-checked and policy-modeled; full real thread/turn stream integration remains a future layer.
+- DOCX/PDF import/export roundtrip, large-project stress, crash recovery, and full model-written manuscript Skill Evals are not implemented in this MVP pass.
+- The normal UI “AI 处理” path still uses deterministic Runtime skills for safety; the real Codex paths are exposed as guarded probe/eval seams until model-generated PatchProposal quality is strong enough for the main product path.
 - True Computer Use Agent nightly harness remains blocked until the CUA action tool is available in the execution environment.
 
 ## Safety policy version

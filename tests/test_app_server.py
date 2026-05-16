@@ -23,6 +23,11 @@ SKILLS = ROOT / "manuscript_runtime_codex_appserver_v2" / "skills"
 
 
 class FakeCodexClient:
+    def __init__(self) -> None:
+        self.skills_cwds = []
+        self.probe_calls = []
+        self.patch_probe_calls = []
+
     def health(self) -> dict:
         return {
             "ok": True,
@@ -39,6 +44,53 @@ class FakeCodexClient:
             "durationMs": 1,
         }
 
+    def list_skills(self, *, cwds, force_reload=True):  # noqa: ANN001
+        self.skills_cwds.append([Path(cwd) for cwd in cwds])
+        return {
+            "ok": True,
+            "response": {
+                "data": [
+                    {
+                        "cwd": Path(cwds[0]).as_posix(),
+                        "errors": [],
+                        "skills": [
+                            {
+                                "name": "revise-with-annotations",
+                                "scope": "repo",
+                                "path": (Path(cwds[0]) / ".codex" / "skills" / "revise-with-annotations" / "SKILL.md").as_posix(),
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+
+    def run_probe_turn(self, **kwargs):  # noqa: ANN003
+        self.probe_calls.append(kwargs)
+        approval_handler = kwargs.get("approval_handler")
+        approval = approval_handler({"method": "item/fileChange/requestApproval", "params": {"fileChanges": [{"path": "chapters/ch01.md"}]}})
+        return {"ok": True, "finalText": '{"ok": true}', "approvals": [{"response": approval}]}
+
+    def run_patch_proposal_turn(self, **kwargs):  # noqa: ANN003
+        self.patch_probe_calls.append(kwargs)
+        proposal = {
+            "id": "PP-probe",
+            "summary": "probe",
+            "sourceAnnotations": ["USER-probe"],
+            "rulesUsed": [],
+            "changes": [
+                {
+                    "file": "chapters/ch05.md",
+                    "targetBlockId": "ch05-p018",
+                    "operation": "replace_block",
+                    "beforeHash": "sha256:a91f3c",
+                    "afterText": "我坐在审讯室里，盯着对面的男人。他没有看我，只把纸杯沿一点点捏扁。",
+                    "reason": "probe patch proposal",
+                }
+            ],
+        }
+        validation = kwargs["patch_validator"](proposal)
+        return {"ok": validation["valid"], "patchProposal": proposal, "patchValidation": validation}
 
 
 class WorkspaceModeAppServerTests(unittest.TestCase):
@@ -96,6 +148,8 @@ class WorkspaceModeAppServerTests(unittest.TestCase):
         self.assertNotIn("正在连接本地 Runtime", html)
         self.assertEqual(health["runtime"]["ok"], False)
         self.assertEqual(health["runtime"]["reason"], "no_project_open")
+        self.assertEqual(health["codex"]["status"], "pending_project_open")
+        self.assertNotIn("not_checked_until_project_open", html)
         self.assertEqual(projects["projects"], [])
 
     def test_create_project_lists_then_open_project(self) -> None:
@@ -116,6 +170,7 @@ class WorkspaceModeAppServerTests(unittest.TestCase):
         self.assertIn("chapters/ch01.md", project["blocks"])
         self.assertEqual(chapter["blocks"]["ch01-p001"]["text"], "")
         self.assertTrue((Path(created["root"]) / ".bookai" / "discussions.jsonl").exists())
+        self.assertTrue((Path(created["root"]) / ".codex" / "skills" / "revise-with-annotations" / "SKILL.md").exists())
         self.assertEqual(discussions["discussions"], [])
 
 
@@ -242,6 +297,20 @@ class AppServerTests(unittest.TestCase):
         self.assertIn('data-view="editor"', html)
         self.assertIn('id="view-diff"', html)
         self.assertIn('id="view-rules"', html)
+        self.assertIn('id="partialPatchBtn" disabled', html)
+        self.assertIn('部分应用（暂不可用）', html)
+        self.assertIn('id="newRuleBtn" disabled', html)
+        self.assertIn('新建规则（暂不可用）', html)
+        self.assertIn('id="batchApplyBtn" disabled', html)
+        self.assertIn('批量应用（暂不可用）', html)
+        self.assertIn('id="previewRuleImpactBtn" disabled', html)
+        self.assertIn('预览影响（暂不可用）', html)
+        self.assertIn('function codexStatusLabel(codex)', script)
+        self.assertIn('pending_project_open: "打开项目后检测"', script)
+        self.assertIn('await loadHealth().catch(() => {})', script)
+        self.assertIn('function selectedBlockIdFromSelection()', script)
+        self.assertIn('openAnnotationModal())', script)
+        self.assertNotIn('not_checked_until_project_open', html)
         with tempfile.NamedTemporaryFile("w", suffix=".js", encoding="utf-8", delete=False) as handle:
             handle.write(script)
             script_path = handle.name
@@ -259,6 +328,24 @@ class AppServerTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stderr or completed.stdout)
         finally:
             Path(script_path).unlink(missing_ok=True)
+
+    def test_codex_appserver_probe_endpoints_are_project_scoped_and_runtime_guarded(self) -> None:
+        skills = self.post("/api/codex/skills", {})
+        probe = self.post("/api/codex/probe", {"prompt": "probe", "timeoutSeconds": 1})
+        patch_probe = self.post("/api/codex/patch-probe", {"timeoutSeconds": 1})
+        fake = self.server.app.codex_client
+
+        self.assertTrue(skills["ok"], skills)
+        self.assertEqual(fake.skills_cwds[-1], [self.project.resolve()])
+        skill = skills["response"]["data"][0]["skills"][0]
+        self.assertEqual(skill["scope"], "repo")
+        self.assertIn("/.codex/skills/", skill["path"])
+        self.assertTrue(probe["ok"], probe)
+        self.assertIn("locked_chapter:chapters/ch01.md", probe["approvals"][0]["response"]["reason"])
+        self.assertEqual(fake.probe_calls[-1]["cwd"], self.project.resolve())
+        self.assertTrue(patch_probe["ok"], patch_probe)
+        self.assertEqual(patch_probe["patchValidation"], {"valid": True, "issues": []})
+        self.assertEqual(fake.patch_probe_calls[-1]["cwd"], self.project.resolve())
 
     def test_project_annotations_chapter_and_audit_endpoints(self) -> None:
         project = self.get("/api/project")

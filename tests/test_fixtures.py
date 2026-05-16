@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+
+from book_workbench.project_creator import PROJECT_SKILL_FILES
 from pathlib import Path
 
 
@@ -102,6 +104,10 @@ def write_black_rain_fixture(root: Path, *, init_git: bool = False) -> Path:
         encoding="utf-8",
     )
     (root / ".bookai" / "discussions.jsonl").write_text("", encoding="utf-8")
+    for relative_path, content in PROJECT_SKILL_FILES.items():
+        skill_path = root / relative_path
+        skill_path.parent.mkdir(parents=True, exist_ok=True)
+        skill_path.write_text(content, encoding="utf-8")
     if init_git:
         subprocess.run(["git", "init"], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         subprocess.run(["git", "config", "user.name", "Fixture"], cwd=root, check=True)

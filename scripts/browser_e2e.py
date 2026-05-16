@@ -19,6 +19,47 @@ class FakeCodexClient:
     def health(self) -> dict:
         return {"ok": True, "command": ["fake-codex", "app-server"], "error": None, "notifications": [], "durationMs": 1}
 
+    def list_skills(self, *, cwds, force_reload=True):  # noqa: ANN001
+        root = Path(cwds[0])
+        return {
+            "ok": True,
+            "response": {
+                "data": [
+                    {
+                        "cwd": root.as_posix(),
+                        "errors": [],
+                        "skills": [
+                            {
+                                "name": "revise-with-annotations",
+                                "scope": "repo",
+                                "path": (root / ".codex" / "skills" / "revise-with-annotations" / "SKILL.md").as_posix(),
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+
+    def run_patch_proposal_turn(self, **kwargs):  # noqa: ANN003
+        proposal = {
+            "id": "PP-e2e-codex",
+            "summary": "browser e2e codex seam",
+            "sourceAnnotations": ["USER-e2e"],
+            "rulesUsed": [],
+            "changes": [
+                {
+                    "file": "chapters/ch01.md",
+                    "targetBlockId": "ch01-p001",
+                    "operation": "replace_block",
+                    "beforeHash": "sha256:6c3a74",
+                    "afterText": "我把信封翻到背面，指尖在空白处停住。",
+                    "reason": "fake codex seam proposal for browser e2e",
+                }
+            ],
+        }
+        validation = kwargs["patch_validator"](proposal)
+        return {"ok": validation["valid"], "patchProposal": proposal, "patchValidation": validation}
+
 
 def git_count(root: Path) -> int:
     return int(subprocess.check_output(["git", "rev-list", "--count", "HEAD"], cwd=root, text=True).strip())
@@ -82,6 +123,9 @@ def main() -> int:
                 assert "还没有书稿项目" not in page.locator("#dashboardMain").inner_text(), "created project must replace the empty workspace state"
                 assert page.evaluate("() => window.BookWorkbench.state.project?.summary?.relativePath") == "fog-letter", "created project should open automatically"
                 assert (user_project / ".bookai" / "discussions.jsonl").exists(), "new projects must include discussion sidecar"
+                assert (user_project / ".codex" / "skills" / "revise-with-annotations" / "SKILL.md").exists(), "new projects must include project-local Codex skills"
+                codex_skills = page.evaluate("""async () => await window.BookWorkbench.api('/api/codex/skills', {method:'POST', body: JSON.stringify({})})""")
+                assert codex_skills["response"]["data"][0]["skills"][0]["scope"] == "repo", "Codex skills endpoint must stay project/repo scoped"
                 page.screenshot(path=str(artifacts / "02-created-project-opened.png"), full_page=True)
 
                 page.evaluate("() => { window.BookWorkbench.state.project = null; window.BookWorkbench.setView('dashboard'); }")

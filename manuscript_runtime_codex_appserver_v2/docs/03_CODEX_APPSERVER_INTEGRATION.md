@@ -71,7 +71,7 @@ App 启动时加载：
 ```text
 /app/skills                      # App 内置
 ~/.manuscript/skills             # 用户自定义
-project/.agents/skills           # 项目级
+project/.codex/skills           # 项目级
 Codex skills/list                # Codex 已安装
 ```
 
