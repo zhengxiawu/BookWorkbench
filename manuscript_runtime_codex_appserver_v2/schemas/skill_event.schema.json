@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SkillEvent",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["type", "runId"],
+      "properties": {
+        "type": { "const": "run.started" },
+        "runId": { "type": "string" }
+      }
+    },
+    {
+      "type": "object",
+      "required": ["type", "message"],
+      "properties": {
+        "type": { "const": "agent.message" },
+        "message": { "type": "string" }
+      }
+    },
+    {
+      "type": "object",
+      "required": ["type", "approval"],
+      "properties": {
+        "type": { "const": "approval.required" },
+        "approval": { "type": "object" }
+      }
+    },
+    {
+      "type": "object",
+      "required": ["type", "patchId"],
+      "properties": {
+        "type": { "const": "patch.ready" },
+        "patchId": { "type": "string" }
+      }
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+rules:
+  - id: R-018
+    type: style
+    text: 人物心理优先通过动作、停顿、回避和场景压力体现，避免直接解释。
+    source_annotations: [AN-041, AN-044]
+    priority: high
+    apply_to: [draft, unreviewed]
+    exclude: [reviewed, locked]
+    status: active

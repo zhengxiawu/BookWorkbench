@@ -1,0 +1,16 @@
+# Local agent/runtime state
+/AGENTS.md
+.omx/
+.codex/
+
+# Local input archives after extraction
+*.zip
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+
+# OS/editor
+.DS_Store

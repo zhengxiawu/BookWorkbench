@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PatchProposal",
+  "type": "object",
+  "required": ["id", "sourceAnnotations", "changes", "summary"],
+  "properties": {
+    "id": { "type": "string" },
+    "summary": { "type": "string" },
+    "sourceAnnotations": { "type": "array", "items": { "type": "string" } },
+    "rulesUsed": { "type": "array", "items": { "type": "string" } },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file", "targetBlockId", "operation", "beforeHash", "afterText", "reason"],
+        "properties": {
+          "file": { "type": "string" },
+          "targetBlockId": { "type": "string" },
+          "operation": { "enum": ["replace_block", "insert_before_block", "insert_after_block", "delete_block"] },
+          "beforeHash": { "type": "string" },
+          "afterText": { "type": "string" },
+          "reason": { "type": "string" },
+          "requiresSecondaryApproval": { "type": "boolean" }
+        }
+      }
+    },
+    "safety": {
+      "type": "object",
+      "properties": {
+        "touchesLockedChapter": { "type": "boolean" },
+        "touchesReviewedChapter": { "type": "boolean" },
+        "impactScope": { "type": "string" }
+      }
+    }
+  }
+}

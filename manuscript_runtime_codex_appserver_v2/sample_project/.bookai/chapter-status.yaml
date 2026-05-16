@@ -1,0 +1,7 @@
+chapters:
+  chapters/ch01.md:
+    status: locked
+  chapters/ch02.md:
+    status: reviewed
+  chapters/ch05.md:
+    status: draft
