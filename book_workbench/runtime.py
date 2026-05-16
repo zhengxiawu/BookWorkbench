@@ -192,6 +192,8 @@ class RuntimeOrchestrator:
         context = self._reload_context()
         return {
             "root": self.project_root.as_posix(),
+            "bookSpec": context.book_spec,
+            "styleGuide": context.style_guide,
             "skills": {name: skill.to_dict() for name, skill in sorted(self.skills.items())},
             "annotations": [annotation_to_dict(item) for item in context.annotations],
             "rules": [rule_to_dict(rule) for rule in context.rules],

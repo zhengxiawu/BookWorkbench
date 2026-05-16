@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -96,10 +97,41 @@ class AppServerTests(unittest.TestCase):
         health = self.get("/api/health")
 
         self.assertIn("BookWorkbench Local App", html)
+        self.assertIn("Manuscript Workbench", html)
+        self.assertIn("Patch / Diff 审核", html)
         self.assertIn('"test-token"', html)
         self.assertEqual(health["app"]["ok"], True)
         self.assertEqual(health["runtime"]["annotations"], 1)
         self.assertEqual(health["codex"]["ok"], True)
+
+
+    def test_index_script_is_syntactically_valid_and_contains_design_views(self) -> None:
+        html = self.get("/")
+        script_start = html.index("<script>") + len("<script>")
+        script_end = html.index("</script>", script_start)
+        script = html[script_start:script_end]
+
+        self.assertIn("const BOOKWORKBENCH_TOKEN = \"test-token\";", script)
+        self.assertIn('data-view="editor"', html)
+        self.assertIn('id="view-diff"', html)
+        self.assertIn('id="view-rules"', html)
+        with tempfile.NamedTemporaryFile("w", suffix=".js", encoding="utf-8", delete=False) as handle:
+            handle.write(script)
+            script_path = handle.name
+        try:
+            node = shutil.which("node")
+            if node is None:
+                self.skipTest("node is required for browser script syntax validation")
+            completed = subprocess.run(
+                [node, "--check", script_path],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr or completed.stdout)
+        finally:
+            Path(script_path).unlink(missing_ok=True)
 
     def test_project_annotations_chapter_and_audit_endpoints(self) -> None:
         project = self.get("/api/project")
