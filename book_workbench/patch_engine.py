@@ -345,6 +345,30 @@ def apply_patch(
     return result
 
 
+
+
+def _deterministic_annotation_revision(block_text: str, selected_text: str | None = None) -> str:
+    """Return a conservative deterministic revision for local e2e use.
+
+    Real model-backed runs should still produce PatchProposal JSON; this helper
+    keeps local app QA runnable without a network/model dependency while avoiding
+    fixture-specific text for newly created books.
+    """
+
+    if (
+        ("我的心里很复杂" in block_text and "内心充满了矛盾和挣扎" in block_text)
+        or "我坐在审讯室里，盯着对面的男人。他沉默，眼神里没有任何波动。" in block_text
+    ):
+        return "我坐在审讯室里，盯着对面的男人。他没有看我，只把纸杯沿一点点捏扁。"
+    target = selected_text if selected_text and selected_text in block_text else block_text
+    target = target.strip()
+    if not target:
+        return "他停了一下，把手里的物件放回原处。"
+    replacement = "他停了一下，指节抵住桌沿，把眼前的物件慢慢推回原处。"
+    if target in block_text:
+        return block_text.replace(target, replacement, 1)
+    return f"{block_text.rstrip()}\n{replacement}"
+
 def make_annotation_patch(context: ProjectContext, annotation_id: str) -> Dict:
     """Generate a conservative deterministic patch for a style annotation.
 
@@ -367,7 +391,7 @@ def make_annotation_patch(context: ProjectContext, annotation_id: str) -> Dict:
     ]
     rules_used = [rules[0].id] if rules else []
 
-    after_text = "我坐在审讯室里，盯着对面的男人。他没有看我，只把纸杯沿一点点捏扁。"
+    after_text = _deterministic_annotation_revision(block.text, annotation.selected_text)
     return {
         "id": f"PP-{annotation.id}",
         "summary": f"按 {annotation.id} 将直接心理说明改为动作呈现。",

@@ -6,14 +6,14 @@ Date: 2026-05-16
 
 Status: **PASS for the implemented MVP safety/UI gates**.
 
-The app now starts in workspace mode with no preloaded novel. Users see an empty project list, can open the “新建项目” modal, create a project, see it appear in the list, and enter the manuscript workbench. Runtime safety gates keep manuscript writes behind PatchProposal validation, Diff review, and Git checkpointing.
+The app now starts in workspace mode with no preloaded novel. Users see an empty project list, can open the “新建项目” modal, create a project, open it, record project discussions, add sidecar annotations, generate a PatchProposal, review the Diff, accept it, and get a Git checkpoint. Runtime safety gates keep manuscript writes behind PatchProposal validation, Diff review, and Git checkpointing.
 
 ## Verification summary
 
 | Area | Result | Evidence |
 | --- | --- | --- |
 | Python compile | PASS | `python3 -m compileall -q book_workbench tests scripts` |
-| Unit/integration tests | PASS | `python3 -m unittest discover -s tests -v` — 52 tests |
+| Unit/integration tests | PASS | `python3 -m unittest discover -s tests -v` — 53 tests |
 | Browser E2E | PASS | `python3 scripts/browser_e2e.py` |
 | JS syntax | PASS | extracted served script checked by `node --check` inside app-server tests |
 | Diff hygiene | PASS | `git diff --check` |
@@ -25,10 +25,15 @@ Browser artifacts are saved under `.omx/evidence/browser-e2e/`:
 - `01-empty-workspace.png`
 - `02-created-project-listed.png`
 - `03-open-created-project.png`
-- `04-diff-preview-before-accept.png`
-- `05-after-accept-commit.png`
+- `04-discussion-sidecar.png`
+- `05-annotation-sidecar.png`
+- `06-user-book-diff-before-accept.png`
+- `07-user-book-after-accept-commit.png`
+- `08-fixture-diff-before-accept.png`
+- `09-fixture-after-accept-commit.png`
 - `console.json` — `[]`
 - `page-errors.json` — `[]`
+- `summary.json` — `ok: true`
 
 ## Implemented release gates
 
@@ -45,13 +50,27 @@ Browser artifacts are saved under `.omx/evidence/browser-e2e/`:
 | TC-009 app-server fileChange approval requests routed through Runtime policy seam | PASS |
 | TC-010 accepting Patch creates Git commit; rejected Patch does not apply | PASS |
 | TC-011 concurrent same-block stale patch rejected | PASS |
-| TC-012 browser UI flow: empty workspace → create/open project → annotate → Diff → accept → commit | PASS |
+| TC-012 browser UI flow: empty workspace → create/open project → discuss → annotate → Diff → accept → commit | PASS |
+
+## Whole-app E2E flow just exercised
+
+`python3 scripts/browser_e2e.py` performed these browser actions against the served app:
+
+1. Confirmed empty workspace and no demo novel.
+2. Created a new user book `雾中来信` with user-supplied opening text.
+3. Opened the created project and first chapter.
+4. Created a project discussion; verified it was written to `.bookai/discussions.jsonl` and did not mutate the chapter.
+5. Added an annotation; verified `.bookai/annotations.jsonl` changed and chapter text did not.
+6. Ran AI revise; verified Diff/PatchProposal appeared and chapter text was still unchanged before acceptance.
+7. Accepted the patch; verified chapter text changed through Runtime and Git commit count increased from 0 to 1.
+8. Repeated the original `AN-041` fixture path and verified commit count increased from 1 to 2.
 
 ## Fixes applied during QA
 
 - Removed hard-coded demo book UI state from default app startup.
 - Added workspace discovery/list/open support before any Runtime project is loaded.
 - Added a visible new-project modal instead of one-click demo creation.
+- Added project discussion sidecar support in `.bookai/discussions.jsonl` plus UI/API flow.
 - Added sidecar annotation creation endpoint with block id, selected text, offsets, beforeHash, and block-index update.
 - Added Runtime acceptance-time Git checkpointing.
 - Added source annotation selectedText/beforeHash drift validation to prevent silent wrong-block edits.
@@ -59,11 +78,15 @@ Browser artifacts are saved under `.omx/evidence/browser-e2e/`:
 - Added app-server file-change approval policy seam that declines direct manuscript/metadata/locked/reviewed writes outside Runtime PatchProposal flow.
 - Added browser E2E harness and 12-gate release tests.
 
+## Computer-use status
+
+A true OpenAI Computer Use action tool is **not exposed in this local Codex tool environment**, so this run used Playwright browser actions as the safe local UI harness. The E2E script records screenshots and validates backend state/files/Git commits; it does not rely on screenshot-only self-reporting.
+
 ## Known residual risks
 
 - DOCX/PDF import/export roundtrip, large-project stress, crash recovery, and real model Skill Evals are not implemented in this MVP pass.
 - Codex app-server is currently health-checked and policy-modeled; full real thread/turn stream integration remains a future layer.
-- Browser E2E is Playwright-based deterministic automation, not a live Computer Use Agent nightly harness.
+- True Computer Use Agent nightly harness remains blocked until the CUA action tool is available in the execution environment.
 
 ## Safety policy version
 

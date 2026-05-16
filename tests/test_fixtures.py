@@ -101,6 +101,7 @@ def write_black_rain_fixture(root: Path, *, init_git: bool = False) -> Path:
         "\n".join(json.dumps(item, ensure_ascii=False) for item in annotations),
         encoding="utf-8",
     )
+    (root / ".bookai" / "discussions.jsonl").write_text("", encoding="utf-8")
     if init_git:
         subprocess.run(["git", "init"], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         subprocess.run(["git", "config", "user.name", "Fixture"], cwd=root, check=True)

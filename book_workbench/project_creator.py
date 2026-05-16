@@ -90,6 +90,7 @@ def build_project_plan(
             "content": "chapters:\n  chapters/ch01.md:\n    status: draft\n",
         },
         {"path": ".bookai/annotations.jsonl", "content": ""},
+        {"path": ".bookai/discussions.jsonl", "content": ""},
         {
             "path": "chapters/ch01.md",
             "content": (

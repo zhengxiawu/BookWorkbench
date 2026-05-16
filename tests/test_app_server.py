@@ -107,6 +107,7 @@ class WorkspaceModeAppServerTests(unittest.TestCase):
         opened = self.post("/api/projects/open", {"relativePath": "my-first-book"})
         project = self.get("/api/project")
         chapter = self.get("/api/chapters/" + urllib.parse.quote("chapters/ch01.md", safe=""))
+        discussions = self.get("/api/discussions")
 
         self.assertEqual(created["summary"]["title"], "我的第一本书")
         self.assertEqual([item["relativePath"] for item in projects["projects"]], ["my-first-book"])
@@ -114,6 +115,37 @@ class WorkspaceModeAppServerTests(unittest.TestCase):
         self.assertEqual(project["open"], True)
         self.assertIn("chapters/ch01.md", project["blocks"])
         self.assertEqual(chapter["blocks"]["ch01-p001"]["text"], "")
+        self.assertTrue((Path(created["root"]) / ".bookai" / "discussions.jsonl").exists())
+        self.assertEqual(discussions["discussions"], [])
+
+    def test_create_discussion_writes_sidecar_and_not_chapter(self) -> None:
+        created = self.post(
+            "/api/projects/create",
+            {
+                "title": "讨论测试",
+                "slug": "discussion-flow",
+                "openingText": "我站在门口，心里很乱。",
+            },
+        )
+        self.post("/api/projects/open", {"relativePath": "discussion-flow"})
+        chapter_path = Path(created["root"]) / "chapters" / "ch01.md"
+        before_chapter = chapter_path.read_text(encoding="utf-8")
+
+        result = self.post(
+            "/api/discussions/create",
+            {
+                "text": "讨论：这一段要从动作进入，不要直接解释心情。",
+                "file": "chapters/ch01.md",
+                "blockId": "ch01-p001",
+            },
+        )
+        listed = self.get("/api/discussions")
+        audit = self.get("/api/audit")
+
+        self.assertEqual(result["discussion"]["id"], "DS-001")
+        self.assertIn("不要直接解释心情", listed["discussions"][0]["text"])
+        self.assertEqual(chapter_path.read_text(encoding="utf-8"), before_chapter)
+        self.assertIn("discussion.created", [event["type"] for event in audit["events"]])
 
     def test_existing_fixture_can_be_opened_from_project_list(self) -> None:
         write_black_rain_fixture(self.workspace / "black-rain-after")
