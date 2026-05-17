@@ -586,12 +586,29 @@ class CodexAppServerClient:
     def _start_process(self) -> subprocess.Popen:
         return self._popen_factory(
             self.command,
-            cwd=str(self.cwd) if self.cwd is not None else None,
+            cwd=str(self._process_cwd()),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=False,
         )
+
+    def _process_cwd(self) -> Path:
+        """Choose a process cwd that avoids unsupported repo-local config warnings.
+
+        Codex app-server reads `.codex/config.toml` from its process cwd.
+        BookWorkbench passes the manuscript project explicitly in thread/start
+        and skills/list `cwd` parameters, so the app-server process itself can
+        safely start outside the repository to avoid loading BookWorkbench's
+        OMX-only project config keys.
+        """
+
+        if self.cwd is None:
+            return Path.home()
+        repo_config = self.cwd / ".codex" / "config.toml"
+        if repo_config.exists():
+            return Path.home()
+        return self.cwd
 
     @staticmethod
     def _send_message(process: subprocess.Popen, message: Dict[str, Any]) -> None:

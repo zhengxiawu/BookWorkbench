@@ -10,7 +10,7 @@ from .annotation_engine import annotation_to_dict, classification_summary, open_
 from .audit import AuditLog, utc_now
 from .git_service import GitError, amend_all, commit_all, ensure_repo
 from .patch_engine import apply_patch, make_annotation_patch, preview_diff, validate_patch
-from .project import load_project
+from .project import load_project, write_block_index
 from .rule_engine import applicable_rules, propose_rules_from_annotations, rule_to_dict
 from .skill_manager import build_skill_roots, discover_skills, resolve_skills
 
@@ -148,6 +148,7 @@ class RuntimeOrchestrator:
         commit_error = None
         if result.valid:
             files = self._patch_files(patch)
+            write_block_index(self._reload_context())
             self._audit({"type": "patch.applied", "patchId": self._patch_id(patch), "files": files})
             try:
                 ensure_repo(self.project_root)

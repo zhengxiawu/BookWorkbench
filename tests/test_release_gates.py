@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT))
 from book_workbench.app_server import RuntimeWebApp
 from book_workbench.git_service import status
 from book_workbench.patch_engine import make_annotation_patch, validate_patch
-from book_workbench.project import load_project
+from book_workbench.project import index_markdown_blocks, load_project
 from book_workbench.runtime import RuntimeOrchestrator
 from tests.test_fixtures import write_black_rain_fixture
 
@@ -214,6 +214,8 @@ class ReleaseGateRuntimeTests(unittest.TestCase):
             accepted = runtime.accept_patch(patch)
             after_count = int(subprocess.check_output(["git", "rev-list", "--count", "HEAD"], cwd=project, text=True).strip())
             dirty_after_accept = subprocess.check_output(["git", "status", "--short"], cwd=project, text=True).strip()
+            blocks = index_markdown_blocks(project, "chapters/ch05.md")
+            block_index = json.loads((project / ".bookai" / "block-index.json").read_text(encoding="utf-8"))
             bad = json.loads(json.dumps(patch, ensure_ascii=False))
             bad["changes"][0]["beforeHash"] = "sha256:stale"
             rejected = runtime.accept_patch(bad)
@@ -222,6 +224,7 @@ class ReleaseGateRuntimeTests(unittest.TestCase):
             self.assertIsNone(accepted["commitError"])
             self.assertEqual(after_count, before_count + 1)
             self.assertEqual(dirty_after_accept, "")
+            self.assertEqual(block_index["chapters/ch05.md"]["ch05-p018"]["hash"], blocks["ch05-p018"].before_hash)
             self.assertFalse(rejected["applied"])
             self.assertNotIn("纸杯沿一点点捏扁", status(project))
 

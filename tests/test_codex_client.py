@@ -184,6 +184,14 @@ class CodexClientTests(unittest.TestCase):
         self.assertEqual(result["response"]["data"][0]["skills"][0]["scope"], "repo")
         self.assertIn("/.codex/skills/", result["response"]["data"][0]["skills"][0]["path"])
 
+    def test_process_cwd_avoids_project_local_config_when_explicit_cwd_is_passed(self) -> None:
+        root = Path(self.id().replace(".", "_"))
+        with mock.patch("book_workbench.codex_client.Path.home", return_value=Path("/tmp/book-workbench-home")):
+            plain = CodexAppServerClient(command=["/usr/bin/codex", "app-server"], cwd=root)
+            with_config = CodexAppServerClient(command=["/usr/bin/codex", "app-server"], cwd=ROOT)
+
+            self.assertEqual(plain._process_cwd(), root.resolve())
+            self.assertEqual(with_config._process_cwd(), Path("/tmp/book-workbench-home"))
 
     def test_json_turn_parses_and_validates_generic_skill_output(self) -> None:
         client = CodexAppServerClient(command=["/usr/bin/codex", "app-server"])

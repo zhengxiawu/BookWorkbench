@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 from book_workbench.audit import AuditLog
 from book_workbench.git_service import commit_all, ensure_repo, status
 from book_workbench.patch_engine import apply_patch, make_annotation_patch, validate_patch
-from book_workbench.project import load_project
+from book_workbench.project import index_markdown_blocks, load_project
 from book_workbench.runtime import RuntimeOrchestrator
 from book_workbench.skill_manager import discover_skills, resolve_skills
 
@@ -31,6 +31,15 @@ class ExtendedRuntimeTests(unittest.TestCase):
 
     def patch_for(self, project: Path) -> dict:
         return make_annotation_patch(load_project(project), "AN-041")
+
+    def assert_block_index_matches_chapter(self, project: Path, file_path: str, block_id: str) -> None:
+        blocks = index_markdown_blocks(project, file_path)
+        block_index = json.loads((project / ".bookai" / "block-index.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            block_index[file_path][block_id]["hash"],
+            blocks[block_id].before_hash,
+            f"{file_path}#{block_id} block-index hash must match embedded chapter anchor",
+        )
 
     def test_forbidden_non_chapter_target_rejected(self) -> None:
         context = load_project(SAMPLE)
@@ -106,6 +115,7 @@ class ExtendedRuntimeTests(unittest.TestCase):
             self.assertIn("patch.previewed", [event["type"] for event in events])
             self.assertIn("patch.applied", [event["type"] for event in events])
             self.assertIn("git.committed", [event["type"] for event in events])
+            self.assert_block_index_matches_chapter(project, "chapters/ch05.md", "ch05-p018")
 
     def test_accept_patch_commits_audit_events_and_leaves_clean_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -126,6 +136,8 @@ class ExtendedRuntimeTests(unittest.TestCase):
             self.assertEqual(after_count, before_count + 1)
             self.assertEqual(dirty, "")
             self.assertIn(".bookai/audit-log.jsonl", show)
+            self.assertIn(".bookai/block-index.json", show)
+            self.assert_block_index_matches_chapter(project, "chapters/ch05.md", "ch05-p018")
 
     def test_runtime_accept_patch_rejects_and_audits_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

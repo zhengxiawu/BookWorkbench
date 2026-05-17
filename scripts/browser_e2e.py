@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -103,6 +104,17 @@ class FakeCodexClient:
 
 def git_count(root: Path) -> int:
     return int(subprocess.check_output(["git", "rev-list", "--count", "HEAD"], cwd=root, text=True).strip())
+
+
+def assert_block_index_matches(root: Path, file_path: str, block_id: str) -> None:
+    text = (root / file_path).read_text(encoding="utf-8")
+    match = re.search(rf"^<!--\s*mw:block\s+id={re.escape(block_id)}\s+hash=([^\s]+)\s*-->\s*$", text, re.MULTILINE)
+    assert match, f"{file_path} must contain block anchor for {block_id}"
+    block_index = json.loads((root / ".bookai" / "block-index.json").read_text(encoding="utf-8"))
+    assert block_index[file_path][block_id]["hash"] == match.group(1), (
+        f"{file_path}#{block_id} block-index hash must match embedded anchor: "
+        f"{block_index[file_path][block_id]['hash']} != {match.group(1)}"
+    )
 
 
 def main() -> int:
@@ -235,6 +247,7 @@ def main() -> int:
                 assert "没有署名的空白处" in final_text, "accepted patch must apply codex-generated main path revision"
                 assert opening not in final_text, "accepted patch should replace the annotated direct-emotion wording"
                 assert after_commits == before_commits + 1, "accepted patch must create git commit"
+                assert_block_index_matches(user_project, "chapters/ch01.md", "ch01-p001")
                 page.screenshot(path=str(artifacts / "07-user-book-after-accept-commit.png"), full_page=True)
 
                 # Fixture flow remains covered for the original AN-041 safety/runtime path.
@@ -297,6 +310,7 @@ def main() -> int:
                 fixture_after_commits = git_count(workspace / "black-rain-after")
                 assert "纸杯沿一点点捏扁" in fixture_final, "accepted fixture patch must apply expected AN-041 text"
                 assert fixture_after_commits == fixture_before_commits + 1, "accepted fixture patch must create git commit"
+                assert_block_index_matches(workspace / "black-rain-after", "chapters/ch05.md", "ch05-p018")
                 page.screenshot(path=str(artifacts / "09-fixture-after-accept-commit.png"), full_page=True)
 
                 flow_report.update(

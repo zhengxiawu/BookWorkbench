@@ -106,15 +106,18 @@ def safe_chapter_path(root: Path, file_path: str) -> Path:
 
 
 def _chapter_files(root: Path, annotations: Iterable[Annotation], chapter_status: Dict[str, str]) -> List[Path]:
+    # Deduplicate metadata references before calling ``safe_chapter_path``.
+    # Large imported review sets commonly contain thousands of annotations
+    # spread over the same few chapter files; resolving every annotation path
+    # individually made dashboard/project open time scale with annotation
+    # count. The security boundary remains the same because every unique
+    # metadata path still goes through ``safe_chapter_path`` before indexing.
     files = set()
-    for file_path in chapter_status:
+    referenced_paths = set(chapter_status)
+    referenced_paths.update(annotation.file for annotation in annotations)
+    for file_path in referenced_paths:
         try:
             files.add(safe_chapter_path(root, file_path))
-        except ProjectLoadError:
-            continue
-    for annotation in annotations:
-        try:
-            files.add(safe_chapter_path(root, annotation.file))
         except ProjectLoadError:
             continue
     chapters_dir = root / "chapters"
@@ -165,6 +168,40 @@ def index_markdown_blocks(root: Path, file_path: str) -> Dict[str, MarkdownBlock
             text_lines.append(line)
     flush(len(lines))
     return blocks
+
+
+def block_index_from_context(context: ProjectContext) -> Dict[str, Dict[str, Dict[str, int | str]]]:
+    """Return the persisted sidecar block index for the current files.
+
+    The index is a cache of anchors already embedded in ``chapters/*.md``. It
+    must therefore be rebuilt from a freshly loaded ``ProjectContext`` after
+    any accepted patch writes chapter text; otherwise later annotation remap
+    and beforeHash checks can compare against stale sidecar data.
+    """
+
+    return {
+        file_path: {
+            block_id: {
+                "hash": block.before_hash,
+                "startLine": block.start_line,
+                "endLine": block.end_line,
+            }
+            for block_id, block in sorted(blocks.items())
+        }
+        for file_path, blocks in sorted(context.blocks.items())
+    }
+
+
+def write_block_index(context: ProjectContext) -> Path:
+    """Rewrite ``.bookai/block-index.json`` from the current context."""
+
+    path = context.root / ".bookai" / "block-index.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(block_index_from_context(context), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return path
 
 
 def load_project(root: str | Path) -> ProjectContext:
