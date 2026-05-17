@@ -14,6 +14,8 @@ sys.path.insert(0, str(ROOT))
 
 from book_workbench.app_server import create_server
 from tests.test_fixtures import write_black_rain_fixture
+from tests.test_powerbook_importer import write_minimal_powerbook
+from book_workbench.powerbook_importer import import_powerbook_project
 
 
 class FakeCodexClient:
@@ -47,7 +49,25 @@ class FakeCodexClient:
     def run_patch_proposal_turn(self, **kwargs):  # noqa: ANN003
         self.patch_calls += 1
         prompt = kwargs.get("prompt", "")
-        if "AN-001" in prompt:
+        if "trusted-powerbook-gemini-chapter" in prompt:
+            proposal = {
+                "id": "PP-e2e-powerbook-workflow",
+                "summary": "browser e2e PowerBook trusted workflow",
+                "sourceAnnotations": ["USER-powerbook-gemini-workflow"],
+                "rulesUsed": ["PB-001"],
+                "changes": [
+                    {
+                        "file": "chapters/ch01_power.md",
+                        "targetBlockId": "ch01-p001",
+                        "operation": "replace_block",
+                        "beforeHash": "sha256:6db580",
+                        "afterText": "第一段正文，先把抽象术语放回普通人能看见的处境里。",
+                        "reason": "fake PowerBook workflow proposal for browser e2e",
+                    }
+                ],
+                "workflow": {"model": "gemini-3.1-pro-preview", "scriptPath": "scripts/polish_chapters_gemini.py", "geminiRequested": True, "geminiInvoked": False},
+            }
+        elif "AN-001" in prompt:
             proposal = {
                 "id": "PP-e2e-codex-user",
                 "summary": "browser e2e codex main path",
@@ -316,6 +336,39 @@ def main() -> int:
                 assert_block_index_matches(workspace / "black-rain-after", "chapters/ch05.md", "ch05-p018")
                 page.screenshot(path=str(artifacts / "09-fixture-after-accept-commit.png"), full_page=True)
 
+
+                # Imported PowerBook workflow: baseline commit exists, trusted Gemini/Codex route produces a PatchProposal, and accept is a separate commit.
+                power_source = write_minimal_powerbook(workspace / "PowerBook-source")
+                power_project = Path(import_powerbook_project(power_source, workspace, slug="powerbook-test")["root"])
+                assert git_count(power_project) == 1, "PowerBook import must create a clean baseline commit"
+                page.goto(base_url, wait_until="networkidle")
+                expect(page.get_by_test_id("project-card").filter(has_text="权力测试书")).to_be_visible(timeout=5000)
+                page.evaluate("() => window.BookWorkbench.openProject('powerbook-test')")
+                page.wait_for_function("() => window.BookWorkbench.state?.project?.summary?.slug === 'powerbook-test'")
+                expect(page.get_by_test_id("powerbook-workflow-card")).to_be_visible(timeout=5000)
+                # Keep browser E2E deterministic: exercise the trusted PowerBook
+                # workflow through the Codex app-server seam instead of attempting
+                # a real Gemini network call from CI/browser smoke runs.
+                page.evaluate("() => window.BookWorkbench.runPowerBookGeminiChapter({ directGemini: false })")
+                expect(page.locator("#view-diff")).to_be_visible(timeout=5000)
+                expect(page.locator("#patchValidity")).to_contain_text("通过", timeout=5000)
+                page.wait_for_function("() => window.BookWorkbench.state?.lastPatch?.id === 'PP-e2e-powerbook-workflow'")
+                expect(page.locator("#workflowEvidence")).to_contain_text("gemini-3.1-pro-preview", timeout=5000)
+                expect(page.locator("#workflowEvidence")).to_contain_text("scripts/polish_chapters_gemini.py", timeout=5000)
+                expect(page.locator("#workflowEvidence")).to_contain_text("实际调用 Gemini", timeout=5000)
+                power_before = (power_project / "chapters" / "ch01_power.md").read_text(encoding="utf-8")
+                assert "普通人能看见的处境" not in power_before
+                power_before_commits = git_count(power_project)
+                page.screenshot(path=str(artifacts / "10-powerbook-workflow-diff.png"), full_page=True)
+                page.locator("#acceptPatchBtn").click()
+                expect(page.locator("#view-editor")).to_be_visible(timeout=5000)
+                power_after = (power_project / "chapters" / "ch01_power.md").read_text(encoding="utf-8")
+                power_after_commits = git_count(power_project)
+                assert "普通人能看见的处境" in power_after, "accepted PowerBook workflow patch must apply only after review"
+                assert power_after_commits == power_before_commits + 1, "PowerBook workflow patch must create a separate commit after baseline"
+                assert_block_index_matches(power_project, "chapters/ch01_power.md", "ch01-p001")
+                page.screenshot(path=str(artifacts / "11-powerbook-workflow-after-accept.png"), full_page=True)
+
                 flow_report.update(
                     {
                         "ok": True,
@@ -329,6 +382,11 @@ def main() -> int:
                         "fixtureProject": {
                             "commitCountBefore": fixture_before_commits,
                             "commitCountAfter": fixture_after_commits,
+                        },
+                        "powerbookProject": {
+                            "baselineCommitCount": 1,
+                            "commitCountBefore": power_before_commits,
+                            "commitCountAfter": power_after_commits,
                         },
                     }
                 )

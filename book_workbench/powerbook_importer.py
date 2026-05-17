@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
+from .git_service import commit_all, ensure_repo, run_git
 from .patch_engine import current_block_hash
 from .project import load_project, write_block_index
 from .project_creator import PROJECT_SKILL_FILES, ProjectCreationError, slugify
@@ -195,6 +196,7 @@ def import_powerbook_project(
         path.write_text(content, encoding="utf-8")
 
     write_block_index(load_project(target))
+    baseline_commit = _create_import_baseline_commit(target, source)
     return {
         "root": target.as_posix(),
         "sourceRoot": source.as_posix(),
@@ -202,7 +204,35 @@ def import_powerbook_project(
         "chapterCount": len(imported_chapters),
         "annotationCount": len(annotations),
         "sourceTreeHash": _tree_hash(source_hashes),
+        "baselineCommitCreated": bool(baseline_commit),
+        "baselineCommit": baseline_commit,
     }
+
+
+def _create_import_baseline_commit(target: Path, source: Path) -> str:
+    """Initialize the imported copy as a clean rollback baseline.
+
+    PowerBook is imported from a read-only source tree into an editable local
+    workspace.  The first Git commit must therefore represent exactly that
+    imported state; later accepted PatchProposals can then be one-commit
+    revisions instead of accidentally bundling the whole copied project.
+    """
+
+    ensure_repo(target)
+    message = (
+        "Import PowerBook baseline\n\n"
+        "BookWorkbench copied the read-only PowerBook source into a local editable workspace "
+        "and generated anchors, sidecars, and project-local Codex skills.\n\n"
+        "Constraint: Source PowerBook tree remains read-only\n"
+        "Confidence: high\n"
+        "Scope-risk: narrow\n"
+        "Directive: Keep subsequent accepted patches as separate commits after this baseline\n"
+        "Tested: import_powerbook_project baseline git regression\n"
+        f"Related: source={source.as_posix()}\n"
+    )
+    commit_all(target, message, name="BookWorkbench Importer", email="importer@bookworkbench.local")
+    result = run_git(["rev-parse", "--verify", "HEAD"], target)
+    return result.stdout.strip() if result.returncode == 0 else ""
 
 
 def _validate_powerbook_source(source: Path) -> None:

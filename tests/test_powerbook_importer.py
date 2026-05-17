@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT))
 
 from book_workbench.patch_engine import validate_patch
 from book_workbench.powerbook_importer import import_powerbook_project
+from book_workbench.powerbook_workflow import markdown_chapter_to_patch
 from book_workbench.project import load_project
 from book_workbench.runtime import RuntimeOrchestrator
 
@@ -95,6 +96,19 @@ def tree_hash(root: Path) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def git_count(root: Path) -> int:
+    return int(subprocess.check_output(["git", "rev-list", "--count", "HEAD"], cwd=root, text=True).strip())
+
+
+def git_status_short(root: Path) -> str:
+    return subprocess.check_output(["git", "status", "--short"], cwd=root, text=True).strip()
+
+
+def git_last_commit_files(root: Path) -> set[str]:
+    output = subprocess.check_output(["git", "show", "--name-only", "--format=", "HEAD"], cwd=root, text=True)
+    return {line.strip() for line in output.splitlines() if line.strip()}
+
+
 class PowerBookImporterTests(unittest.TestCase):
     def test_import_powerbook_creates_runtime_project_without_mutating_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -113,6 +127,9 @@ class PowerBookImporterTests(unittest.TestCase):
             self.assertEqual(context.chapter_status["chapters/ch02_body.md"], "revised")
             self.assertEqual(context.status_for_file("chapters/ch02_body.md"), "unreviewed")
             imported = json.loads((project / ".bookai" / "powerbook-import.json").read_text(encoding="utf-8"))
+            self.assertEqual(result["baselineCommitCreated"], True)
+            self.assertEqual(git_count(project), 1)
+            self.assertEqual(git_status_short(project), "")
             second = next(item for item in imported["chapters"] if item["target"] == "chapters/ch02_body.md")
             self.assertEqual(second["reviewStatus"], "revised")
             self.assertEqual(second["bookWorkbenchStatus"], "unreviewed")
@@ -128,22 +145,58 @@ class PowerBookImporterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             source = write_minimal_powerbook(Path(tmp) / "PowerBook")
             project = Path(import_powerbook_project(source, Path(tmp) / "workspace", slug="powerbook-test")["root"])
-            subprocess.run(["git", "init"], cwd=project, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            subprocess.run(["git", "config", "user.name", "Fixture"], cwd=project, check=True)
-            subprocess.run(["git", "config", "user.email", "fixture@example.test"], cwd=project, check=True)
-            subprocess.run(["git", "add", "-A"], cwd=project, check=True)
-            subprocess.run(["git", "commit", "-m", "Initial import"], cwd=project, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.assertEqual(git_count(project), 1)
             runtime = RuntimeOrchestrator(project)
             patch = runtime.run_skill("revise-with-annotations", annotation_ids=["AN-CH01-001"])["output"]
             preview = runtime.preview_patch(patch)
             accepted = runtime.accept_patch(patch)
-            dirty = subprocess.check_output(["git", "status", "--short"], cwd=project, text=True).strip()
+            dirty = git_status_short(project)
+            changed_files = git_last_commit_files(project)
 
             self.assertTrue(preview["validation"]["valid"], preview)
             self.assertIn("指节抵住桌沿", preview["diff"])
             self.assertTrue(accepted["applied"], accepted)
+            self.assertEqual(git_count(project), 2)
             self.assertEqual(dirty, "")
+            self.assertIn("chapters/ch01_power.md", changed_files)
+            self.assertIn(".bookai/annotations.jsonl", changed_files)
+            self.assertIn(".bookai/block-index.json", changed_files)
+            self.assertNotIn("book.spec.md", changed_files)
+            self.assertNotIn("scripts/polish_chapters_gemini.py", changed_files)
             self.assertEqual(load_project(project).annotations[0].status, "resolved")
+
+
+    def test_powerbook_gemini_markdown_is_converted_to_patch_without_writing_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = write_minimal_powerbook(Path(tmp) / "PowerBook")
+            before_hash = tree_hash(source)
+            project = Path(import_powerbook_project(source, Path(tmp) / "workspace", slug="powerbook-test")["root"])
+            context = load_project(project)
+            markdown = """---
+chapter: 1
+title: "被改写的选择"
+version: "0.2"
+review_status: "revised"
+---
+
+# 第一章 被改写的选择
+
+第一段正文，先把抽象术语放回一个普通人能看见的处境里。
+
+第二段正文，继续论证。
+
+第三段新增收束，说明权力怎样稳定改写行动空间。
+"""
+
+            patch = markdown_chapter_to_patch(context, "chapters/ch01_power.md", markdown)
+            validation = validate_patch(context, patch)
+
+            self.assertTrue(validation.valid, validation.issues)
+            self.assertEqual(tree_hash(source), before_hash)
+            self.assertEqual(patch["sourceAnnotations"], ["USER-powerbook-gemini-workflow"])
+            self.assertEqual(patch["changes"][0]["file"], "chapters/ch01_power.md")
+            self.assertEqual(patch["changes"][-1]["operation"], "insert_after_block")
+            self.assertNotIn("mw:block", patch["changes"][0]["afterText"])
 
     def test_imported_source_annotation_blocks_stale_patch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

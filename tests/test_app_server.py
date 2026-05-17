@@ -18,6 +18,8 @@ sys.path.insert(0, str(ROOT))
 
 from book_workbench.app_server import create_server
 from tests.test_fixtures import write_black_rain_fixture
+from tests.test_powerbook_importer import write_minimal_powerbook
+from book_workbench.powerbook_importer import import_powerbook_project
 
 SAMPLE = ROOT / "manuscript_runtime_codex_appserver_v2" / "sample_project"
 SKILLS = ROOT / "manuscript_runtime_codex_appserver_v2" / "skills"
@@ -75,7 +77,31 @@ class FakeCodexClient:
 
     def run_patch_proposal_turn(self, **kwargs):  # noqa: ANN003
         self.patch_probe_calls.append(kwargs)
-        if self.patch_mode == "invalid":
+        prompt = kwargs.get("prompt", "")
+        if "trusted-powerbook-gemini-chapter" in prompt:
+            proposal = {
+                "id": "PP-powerbook-codex-test",
+                "summary": "PowerBook trusted workflow proposal",
+                "sourceAnnotations": ["USER-powerbook-gemini-workflow"],
+                "rulesUsed": ["PB-001"],
+                "changes": [
+                    {
+                        "file": "chapters/ch01_power.md",
+                        "targetBlockId": "ch01-p001",
+                        "operation": "replace_block",
+                        "beforeHash": "sha256:6db580",
+                        "afterText": "第一段正文，先把抽象术语放回普通人能看见的处境里。",
+                        "reason": "fake PowerBook workflow proposal",
+                    }
+                ],
+                "workflow": {
+                    "model": "gemini-3.1-pro-preview",
+                    "scriptPath": "scripts/polish_chapters_gemini.py",
+                    "geminiRequested": True,
+                    "geminiInvoked": False,
+                },
+            }
+        elif self.patch_mode == "invalid":
             proposal = {
                 "id": "PP-invalid",
                 "summary": "invalid probe",
@@ -161,6 +187,18 @@ class FakeCodexClient:
         }
 
 
+def post_json(base_url: str, path: str, payload: dict) -> dict:
+    data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        base_url + path,
+        data=data,
+        method="POST",
+        headers={"Content-Type": "application/json", "X-BookWorkbench-Token": "test-token"},
+    )
+    with urllib.request.urlopen(request, timeout=5) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 class WorkspaceModeAppServerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -241,6 +279,17 @@ class WorkspaceModeAppServerTests(unittest.TestCase):
         self.assertTrue((Path(created["root"]) / ".codex" / "skills" / "revise-with-annotations" / "SKILL.md").exists())
         self.assertEqual(discussions["discussions"], [])
 
+
+
+    def test_index_contains_powerbook_workflow_controls_and_evidence_labels(self) -> None:
+        html = self.get("/")
+
+        self.assertIn("用 Gemini 润色本章", html)
+        self.assertIn("生成整章修订建议", html)
+        self.assertIn("工作流证据", html)
+        self.assertIn("实际调用 Gemini", html)
+        self.assertIn("工作流", html)
+        self.assertIn("运行日志", html)
 
     def test_index_script_has_separate_existing_project_list_state(self) -> None:
         html = self.get("/")
@@ -531,6 +580,48 @@ class AppServerTests(unittest.TestCase):
         self.assertEqual(result["output"]["sourceAnnotations"], ["AN-041"])
         self.assertTrue(result["codex"]["patchValidation"]["valid"], result["codex"]["patchValidation"])
         self.assertNotIn("潮湿的手", (self.project / "chapters" / "ch05.md").read_text(encoding="utf-8"))
+
+
+    def test_powerbook_workflow_endpoint_generates_trusted_chapter_patch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = write_minimal_powerbook(Path(tmp) / "PowerBook")
+            workspace = Path(tmp) / "workspace"
+            project = Path(import_powerbook_project(source, workspace, slug="powerbook-test")["root"])
+            server = create_server(
+                project,
+                workspace_root=workspace,
+                builtin_skills_root=SKILLS,
+                port=0,
+                codex_client=FakeCodexClient(),
+                local_token="test-token",
+                quiet=True,
+            )
+            host, port = server.server_address[:2]
+            base_url = f"http://{host}:{port}"
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                result = post_json(
+                    base_url,
+                    "/api/workflows/powerbook/gemini-chapter",
+                    {"file": "chapters/ch01_power.md", "timeoutSeconds": 1},
+                )
+                before_text = (project / "chapters" / "ch01_power.md").read_text(encoding="utf-8")
+                preview = post_json(base_url, "/api/patch/preview", {"patch": result["output"]})
+
+                self.assertEqual(result["source"], "codex-app-server")
+                self.assertEqual(result["workflow"]["model"], "gemini-3.1-pro-preview")
+                self.assertEqual(result["workflow"]["scriptPath"], "scripts/polish_chapters_gemini.py")
+                self.assertEqual(result["workflow"]["geminiRequested"], True)
+                self.assertEqual(result["workflow"]["geminiInvoked"], False)
+                self.assertIn("trusted-powerbook-gemini-chapter", server.app.codex_client.patch_probe_calls[-1]["prompt"])
+                self.assertIn("scripts/polish_chapters_gemini.py", server.app.codex_client.patch_probe_calls[-1]["prompt"])
+                self.assertTrue(preview["validation"]["valid"], preview)
+                self.assertEqual((project / "chapters" / "ch01_power.md").read_text(encoding="utf-8"), before_text)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
 
     def test_project_annotations_chapter_and_audit_endpoints(self) -> None:
         project = self.get("/api/project")

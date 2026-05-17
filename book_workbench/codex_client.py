@@ -19,6 +19,7 @@ import os
 import selectors
 import shutil
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -604,11 +605,17 @@ class CodexAppServerClient:
         """
 
         if self.cwd is None:
-            return Path.home()
+            return self._neutral_process_cwd()
         repo_config = self.cwd / ".codex" / "config.toml"
         if repo_config.exists():
-            return Path.home()
+            return self._neutral_process_cwd()
         return self.cwd
+
+    @staticmethod
+    def _neutral_process_cwd() -> Path:
+        path = Path(tempfile.gettempdir()) / "book-workbench-codex-appserver"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
     @staticmethod
     def _send_message(process: subprocess.Popen, message: Dict[str, Any]) -> None:
