@@ -302,10 +302,15 @@ class WorkspaceModeAppServerTests(unittest.TestCase):
 
         self.assertIn("用 Gemini 润色本章", html)
         self.assertIn("生成整章修订建议", html)
+        self.assertIn('data-testid="powerbook-chapter-select"', html)
+        self.assertIn('data-testid="powerbook-codex-button"', html)
+        self.assertIn("不会生成可提交的模板正文", html)
         self.assertIn("工作流证据", html)
         self.assertIn("实际调用 Gemini", html)
         self.assertIn("工作流", html)
         self.assertIn("运行日志", html)
+        self.assertIn("仅诊断，不可提交", html)
+        self.assertIn("workflowSelectedFile", html)
 
     def test_index_script_has_separate_existing_project_list_state(self) -> None:
         html = self.get("/")
@@ -518,6 +523,7 @@ class AppServerTests(unittest.TestCase):
         self.assertIn('data-annotation-tab="suggestions"', html)
         self.assertIn('status-badge', html)
         self.assertIn('timeoutSeconds: 30', script)
+        self.assertIn('timeoutSeconds: 180', script)
         self.assertIn('function codexStatusLabel(codex)', script)
         self.assertIn('pending_project_open: "打开项目后检测"', script)
         self.assertIn('await loadHealth().catch(() => {})', script)
@@ -679,7 +685,7 @@ class AppServerTests(unittest.TestCase):
                 server.server_close()
                 thread.join(timeout=2)
 
-    def test_powerbook_workflow_falls_back_to_local_patch_when_codex_times_out(self) -> None:
+    def test_powerbook_workflow_falls_back_to_diagnostic_when_codex_times_out(self) -> None:
         class TimeoutCodex(FakeCodexClient):
             def run_patch_proposal_turn(self, **kwargs):  # noqa: ANN003
                 self.patch_probe_calls.append(kwargs)
@@ -712,10 +718,14 @@ class AppServerTests(unittest.TestCase):
 
                 self.assertEqual(result["source"], "local-workflow-fallback")
                 self.assertTrue(result["workflow"]["localFallback"])
+                self.assertTrue(result["workflow"]["diagnosticOnly"])
                 self.assertIn("timeout", result["workflow"]["fallbackReason"])
-                self.assertTrue(preview["validation"]["valid"], preview)
-                self.assertGreaterEqual(len(result["output"]["changes"]), 1)
-                self.assertIn("本地安全兜底", result["output"]["summary"])
+                self.assertFalse(preview["validation"]["valid"], preview)
+                self.assertTrue(any(issue["code"] == "empty_changes" for issue in preview["validation"]["issues"]), preview)
+                self.assertEqual(result["output"]["changes"], [])
+                self.assertTrue(result["output"]["safety"]["acceptDisabled"])
+                self.assertIn("失败诊断", result["output"]["summary"])
+                self.assertEqual((project / "chapters" / "ch01_power.md").read_text(encoding="utf-8").count("这一段需要先落到可见处境"), 0)
             finally:
                 server.shutdown()
                 server.server_close()

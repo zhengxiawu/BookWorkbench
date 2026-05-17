@@ -144,6 +144,7 @@ def main() -> int:
     artifacts.mkdir(parents=True)
     console_messages: list[dict[str, str]] = []
     page_errors: list[str] = []
+    workflow_requests: list[str] = []
     flow_report: dict[str, object] = {"computerUseToolAvailable": False, "harness": "Playwright browser actions"}
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -169,6 +170,12 @@ def main() -> int:
                 page = browser.new_page(viewport={"width": 1440, "height": 1000})
                 page.on("console", lambda msg: console_messages.append({"type": msg.type, "text": msg.text}))
                 page.on("pageerror", lambda exc: page_errors.append(str(exc)))
+                page.on(
+                    "request",
+                    lambda req: workflow_requests.append(req.url)
+                    if "/api/workflows/powerbook/gemini-chapter" in req.url
+                    else None,
+                )
                 page.goto(base_url, wait_until="networkidle")
 
                 expect(page.get_by_test_id("empty-workspace")).to_be_visible(timeout=5000)
@@ -346,13 +353,15 @@ def main() -> int:
                 page.evaluate("() => window.BookWorkbench.openProject('powerbook-test')")
                 page.wait_for_function("() => window.BookWorkbench.state?.project?.summary?.slug === 'powerbook-test'")
                 expect(page.get_by_test_id("powerbook-workflow-card")).to_be_visible(timeout=5000)
-                # Keep browser E2E deterministic: exercise the trusted PowerBook
-                # workflow through the Codex app-server seam instead of attempting
-                # a real Gemini network call from CI/browser smoke runs.
-                page.evaluate("() => window.BookWorkbench.runPowerBookGeminiChapter({ directGemini: false })")
+                # Keep browser E2E deterministic while still exercising the
+                # visible workflow button: the UI click must POST to the
+                # trusted endpoint and then enter Diff Review.
+                requests_before_workflow = len(workflow_requests)
+                page.get_by_test_id("powerbook-codex-button").click()
                 expect(page.locator("#view-diff")).to_be_visible(timeout=5000)
                 expect(page.locator("#patchValidity")).to_contain_text("通过", timeout=5000)
                 page.wait_for_function("() => window.BookWorkbench.state?.lastPatch?.id === 'PP-e2e-powerbook-workflow'")
+                assert len(workflow_requests) > requests_before_workflow, "PowerBook workflow button must call /api/workflows/powerbook/gemini-chapter"
                 expect(page.locator("#workflowEvidence")).to_contain_text("gemini-3.1-pro-preview", timeout=5000)
                 expect(page.locator("#workflowEvidence")).to_contain_text("scripts/polish_chapters_gemini.py", timeout=5000)
                 expect(page.locator("#workflowEvidence")).to_contain_text("实际调用 Gemini", timeout=5000)
@@ -387,6 +396,7 @@ def main() -> int:
                             "baselineCommitCount": 1,
                             "commitCountBefore": power_before_commits,
                             "commitCountAfter": power_after_commits,
+                            "workflowEndpointRequests": len(workflow_requests),
                         },
                     }
                 )

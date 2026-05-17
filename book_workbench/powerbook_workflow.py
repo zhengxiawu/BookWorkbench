@@ -275,11 +275,13 @@ def build_powerbook_local_chapter_patch(
     reason: str = "",
     mode: str = "local-safe-fallback",
 ) -> Dict[str, Any]:
-    """Build a deterministic full-chapter-ish PatchProposal for workflow failures.
+    """Build a non-applicable diagnostic PatchProposal for workflow failures.
 
-    This is deliberately labeled as a local fallback.  It keeps the UI moving
-    when Gemini/Codex time out, but still returns a normal PatchProposal so the
-    Runtime can validate, preview, and require explicit acceptance.
+    This is deliberately not a prose fallback.  A local deterministic template
+    is not equivalent to the original PowerBook + Codex/Gemini writing process,
+    so it must not create manuscript changes that look like successful
+    whole-chapter polishing.  The UI can preview the diagnostic, show the
+    failure reason, and ask the user to retry or adjust the workflow.
     """
 
     safe_chapter_path(context.root, file_path)
@@ -291,45 +293,25 @@ def build_powerbook_local_chapter_patch(
         "source": "local-workflow-fallback",
         "geminiInvoked": False,
         "localFallback": True,
-        "fallbackReason": reason or "外部模型未在限定时间内返回可审核修改建议，已生成本地安全兜底建议。",
-        "runLog": "本地兜底只重写当前章节已有段落，不运行外部命令；接受前仍必须通过差异审核。",
+        "diagnosticOnly": True,
+        "fallbackReason": reason or "外部模型未在限定时间内返回可审核修改建议；本地不会冒充模型润色写入正文。",
+        "runLog": "本地兜底只记录失败诊断，不生成正文改写；请重试 Gemini/Codex 或缩小章节范围。",
     }
-    changes = []
     title = markdown_title(context.root, file_path)
-    for index, block in enumerate(blocks[: min(8, len(blocks))], start=1):
-        revised = _local_powerbook_revision(block.text, index=index, chapter_title=title)
-        if revised.strip() == block.text.strip():
-            continue
-        changes.append(
-            {
-                "file": file_path,
-                "targetBlockId": block.id,
-                "operation": "replace_block",
-                "beforeHash": block.before_hash,
-                "afterText": revised,
-                "reason": "外部 Gemini/Codex 工作流未稳定返回时，由本地安全兜底生成的章节级修改建议；仍需人工差异审核。",
-            }
-        )
-    if not changes:
-        first = blocks[0]
-        changes.append(
-            {
-                "file": file_path,
-                "targetBlockId": first.id,
-                "operation": "insert_after_block",
-                "beforeHash": first.before_hash,
-                "afterText": "换句话说，本章真正要追问的不是概念本身，而是它怎样改变一个人的下一步行动：哪些选择变得昂贵，哪些沉默显得安全，哪些代价在命令出现之前就已经被计算。",
-                "reason": "外部工作流失败后的本地安全兜底：追加一段明确章节问题的正文。",
-            }
-        )
     return {
         "id": f"PP-powerbook-local-{Path(file_path).stem}",
-        "summary": f"本地安全兜底：修订《{title}》。",
+        "summary": f"整章工作流失败诊断：《{title}》未生成可应用正文修改。",
         "sourceAnnotations": [POWERBOOK_SOURCE_ANNOTATION],
         "rulesUsed": [rule.id for rule in applicable_rules(context, file_path)[:3]],
-        "changes": _mark_reviewed_changes(context, changes),
+        "changes": [],
         "workflow": workflow,
-        "safety": {"impactScope": "current_chapter", "writePath": "PatchProposal", "localFallback": True},
+        "safety": {
+            "impactScope": "current_chapter",
+            "writePath": "PatchProposal",
+            "localFallback": True,
+            "diagnosticOnly": True,
+            "acceptDisabled": True,
+        },
     }
 
 
@@ -501,29 +483,6 @@ def _mode_task(mode: str, instruction: str) -> str:
     if extra:
         task += f"\n\n本次用户明确要求：\n{extra}"
     return f"{task}\n\n硬性要求：{common}"
-
-
-def _local_powerbook_revision(text: str, *, index: int, chapter_title: str) -> str:
-    cleaned = re.sub(r"\n{3,}", "\n\n", text.strip())
-    if not cleaned:
-        return (
-            "权力先不必从宏大词语进入。把它放回普通人的一天：一句话说不说、一个申请交不交、一次拒绝敢不敢发生，"
-            "都取决于他预先看见了哪些后果。"
-        )
-    if any(marker in cleaned for marker in ("AUTHOR-NOTE", "AuthorNote", "AuhorNote", "工作流说明")):
-        cleaned = re.sub(r">?\s*\[!?(?:AUTHOR-NOTE|AuthorNote|AuhorNote)\].*", "", cleaned, flags=re.I | re.S).strip()
-    additions = [
-        "这一段需要先落到可见处境：人在做决定前，会先估算损失、关系、资格和安全感；这些估算反复出现，才构成章节要分析的力量。",
-        "换句话说，概念不是装饰。它要解释一张稳定的价格表：说话、沉默、拒绝、配合分别要付出什么，谁能让这张价格表长期有效。",
-        "因此，本章不把问题推给性格或文化，而是追问机制：资源怎样集中，惩罚怎样可预期，规则怎样让人提前调整自己的动作。",
-        "这也给后文留下事实边界：具体年份、数据和引用需要另行查证；在查证前，只能把它们作为待核实线索，而不能写成确定证据。",
-    ]
-    addition = additions[(index - 1) % len(additions)]
-    if addition in cleaned:
-        return cleaned
-    if len(cleaned) < 120:
-        return f"{cleaned} {addition}"
-    return f"{cleaned}\n\n{addition}"
 
 
 def _mark_reviewed_changes(context: ProjectContext, changes: list[Dict[str, Any]]) -> list[Dict[str, Any]]:

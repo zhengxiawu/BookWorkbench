@@ -198,7 +198,7 @@ review_status: "revised"
             self.assertEqual(patch["changes"][-1]["operation"], "insert_after_block")
             self.assertNotIn("mw:block", patch["changes"][0]["afterText"])
 
-    def test_local_powerbook_workflow_fallback_is_runtime_valid_and_substantial(self) -> None:
+    def test_local_powerbook_workflow_fallback_is_diagnostic_only_and_not_applicable(self) -> None:
         from book_workbench.powerbook_workflow import build_powerbook_local_chapter_patch
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -209,10 +209,15 @@ review_status: "revised"
             patch = build_powerbook_local_chapter_patch(context, "chapters/ch01_power.md", reason="timeout")
             result = validate_patch(context, patch)
 
-            self.assertTrue(result.valid, result.issues)
+            self.assertFalse(result.valid, result.issues)
+            self.assertTrue(any(issue.code == "empty_changes" for issue in result.issues), result.issues)
             self.assertEqual(patch["workflow"]["source"], "local-workflow-fallback")
             self.assertTrue(patch["workflow"]["localFallback"])
-            self.assertGreater(sum(len(change["afterText"]) for change in patch["changes"]), 120)
+            self.assertTrue(patch["workflow"]["diagnosticOnly"])
+            self.assertTrue(patch["safety"]["acceptDisabled"])
+            self.assertEqual(patch["changes"], [])
+            self.assertIn("未生成可应用正文修改", patch["summary"])
+            self.assertNotIn("这一段需要先落到可见处境", json.dumps(patch, ensure_ascii=False))
 
     def test_imported_source_annotation_blocks_stale_patch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
