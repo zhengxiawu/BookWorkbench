@@ -8,7 +8,7 @@ from typing import Dict, Iterable, List, Optional
 
 from .annotation_engine import annotation_to_dict, classification_summary, open_annotations
 from .audit import AuditLog, utc_now
-from .git_service import GitError, commit_all, ensure_repo
+from .git_service import GitError, amend_all, commit_all, ensure_repo
 from .patch_engine import apply_patch, make_annotation_patch, preview_diff, validate_patch
 from .project import load_project
 from .rule_engine import applicable_rules, propose_rules_from_annotations, rule_to_dict
@@ -160,6 +160,11 @@ class RuntimeOrchestrator:
                 self._audit({"type": "git.commit_skipped", "patchId": self._patch_id(patch), "reason": commit_error})
             else:
                 self._audit({"type": "git.committed", "patchId": self._patch_id(patch), "files": files})
+                try:
+                    amend_all(self.project_root)
+                except GitError as exc:
+                    commit_error = str(exc)
+                    self._audit({"type": "git.audit_amend_failed", "patchId": self._patch_id(patch), "reason": commit_error})
             self._reload_context()
         else:
             self._audit({"type": "patch.rejected", "patchId": self._patch_id(patch), "issues": validation["issues"]})

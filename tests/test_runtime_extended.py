@@ -105,6 +105,27 @@ class ExtendedRuntimeTests(unittest.TestCase):
             self.assertIn("纸杯沿一点点捏扁", text)
             self.assertIn("patch.previewed", [event["type"] for event in events])
             self.assertIn("patch.applied", [event["type"] for event in events])
+            self.assertIn("git.committed", [event["type"] for event in events])
+
+    def test_accept_patch_commits_audit_events_and_leaves_clean_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self.copy_sample(Path(tmp))
+            ensure_repo(project)
+            commit_all(project, "Initial fixture\n\nConfidence: high")
+            runtime = RuntimeOrchestrator(project)
+            patch = make_annotation_patch(runtime.context, "AN-041")
+            before_count = int(subprocess.check_output(["git", "rev-list", "--count", "HEAD"], cwd=project, text=True).strip())
+
+            accepted = runtime.accept_patch(patch)
+            after_count = int(subprocess.check_output(["git", "rev-list", "--count", "HEAD"], cwd=project, text=True).strip())
+            dirty = subprocess.check_output(["git", "status", "--short"], cwd=project, text=True).strip()
+            show = subprocess.check_output(["git", "show", "--name-only", "--format=", "HEAD"], cwd=project, text=True)
+
+            self.assertTrue(accepted["applied"], accepted)
+            self.assertIsNone(accepted["commitError"])
+            self.assertEqual(after_count, before_count + 1)
+            self.assertEqual(dirty, "")
+            self.assertIn(".bookai/audit-log.jsonl", show)
 
     def test_runtime_accept_patch_rejects_and_audits_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

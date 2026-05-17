@@ -69,3 +69,34 @@ def commit_all(root: str | Path, message: str, *, name: str = "BookWorkbench Age
     )
     if commit.returncode != 0:
         raise GitError(commit.stderr.strip() or commit.stdout.strip())
+
+
+def amend_all(root: str | Path, *, name: str = "BookWorkbench Agent", email: str = "agent@bookworkbench.local") -> None:
+    """Stage current changes and fold them into the latest commit without changing its message."""
+
+    root = Path(root)
+    add = run_git(["add", "-A"], root)
+    if add.returncode != 0:
+        raise GitError(add.stderr.strip() or add.stdout.strip())
+    diff = run_git(["diff", "--cached", "--quiet"], root)
+    if diff.returncode == 0:
+        return
+    amend = subprocess.run(
+        [
+            "git",
+            "-c",
+            f"user.name={name}",
+            "-c",
+            f"user.email={email}",
+            "commit",
+            "--amend",
+            "--no-edit",
+        ],
+        cwd=str(root),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if amend.returncode != 0:
+        raise GitError(amend.stderr.strip() or amend.stdout.strip())

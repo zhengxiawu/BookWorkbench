@@ -213,6 +213,7 @@ class ReleaseGateRuntimeTests(unittest.TestCase):
             before_count = int(subprocess.check_output(["git", "rev-list", "--count", "HEAD"], cwd=project, text=True).strip())
             accepted = runtime.accept_patch(patch)
             after_count = int(subprocess.check_output(["git", "rev-list", "--count", "HEAD"], cwd=project, text=True).strip())
+            dirty_after_accept = subprocess.check_output(["git", "status", "--short"], cwd=project, text=True).strip()
             bad = json.loads(json.dumps(patch, ensure_ascii=False))
             bad["changes"][0]["beforeHash"] = "sha256:stale"
             rejected = runtime.accept_patch(bad)
@@ -220,6 +221,7 @@ class ReleaseGateRuntimeTests(unittest.TestCase):
             self.assertTrue(accepted["applied"], accepted)
             self.assertIsNone(accepted["commitError"])
             self.assertEqual(after_count, before_count + 1)
+            self.assertEqual(dirty_after_accept, "")
             self.assertFalse(rejected["applied"])
             self.assertNotIn("纸杯沿一点点捏扁", status(project))
 

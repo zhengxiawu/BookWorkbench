@@ -187,8 +187,8 @@ INDEX_HTML = """<!doctype html>
     .meta-cell { padding: 14px 18px; border-right: 1px solid var(--line); display: flex; gap: 12px; align-items: center; }
     .meta-cell:last-child { border-right: 0; }
     .diff-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    .diff-col { padding: 18px; background: #fff; border: 1px solid var(--line); border-radius: 14px; min-height: 340px; }
-    .diff-line { display: grid; grid-template-columns: 34px 1fr 18px; gap: 10px; padding: 10px; border-radius: 8px; margin: 7px 0; line-height: 1.7; }
+    .diff-col { padding: 20px; background: #fff; border: 1px solid var(--line); border-radius: 14px; min-height: 340px; }
+    .diff-line { display: grid; grid-template-columns: 34px 1fr 18px; gap: 10px; padding: 14px 16px; border-radius: 10px; margin: 9px 0; line-height: 1.75; }
     .diff-line.minus { background: #fff1f2; border-left: 3px solid #fb7185; }
     .diff-line.plus { background: #ecfdf3; border-left: 3px solid #34d399; }
     .diff-line .ln { color: #8d99ad; }
@@ -241,8 +241,16 @@ INDEX_HTML = """<!doctype html>
       .nav { grid-template-columns: repeat(3, 1fr); }
       .topbar { flex-wrap: wrap; }
       .search { order: 3; width: 100%; }
+      .main { padding: 18px; }
+      .topbar { align-items: flex-start; }
+      .avatar { display: none; }
       .stats, .diff-columns, .change-meta, .form-grid { grid-template-columns: 1fr; }
+      .toolbar, .diff-top, .editor-footer { flex-wrap: wrap; }
+      .side-stack { gap: 12px; }
       .paragraph { grid-template-columns: 1fr; gap: 4px; }
+      .doc { padding: 24px 18px; }
+      .button-row, .button-row.single { grid-template-columns: 1fr; }
+      .primary-btn, .ghost-btn, .danger-btn, .back-btn { min-height: 44px; }
     }
   </style>
 </head>
@@ -317,18 +325,18 @@ INDEX_HTML = """<!doctype html>
   <div class="modal-backdrop hidden" id="projectModal" data-testid="new-project-modal">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="projectModalTitle">
       <header><h2 id="projectModalTitle">新建书稿项目</h2><button class="ghost-btn" type="button" id="closeProjectModalBtn">关闭</button></header>
-      <form id="projectForm">
+      <form id="projectForm" autocomplete="off">
         <div class="form-grid">
-          <label class="field">书名<input id="projectTitleInput" name="title" required placeholder="例如：我的第一本书"></label>
-          <label class="field">目录名（可选）<input id="projectSlugInput" name="slug" placeholder="my-first-book"></label>
+          <label class="field" for="projectTitleInput">书名<input id="projectTitleInput" name="title" required autocomplete="off" aria-label="书名" data-testid="project-title-input" placeholder="例如：我的第一本书"></label>
+          <label class="field" for="projectSlugInput">目录名（可选）<input id="projectSlugInput" name="slug" autocomplete="off" autocapitalize="none" spellcheck="false" aria-label="目录名" data-testid="project-slug-input" placeholder="my-first-book"></label>
         </div>
         <div class="form-grid">
-          <label class="field">类型<input id="projectGenreInput" name="genre" placeholder="长篇小说 / 非虚构 / 剧本"></label>
-          <label class="field">第一章标题<input id="projectChapterTitleInput" name="chapterTitle" placeholder="第一章"></label>
+          <label class="field" for="projectGenreInput">类型<input id="projectGenreInput" name="genre" autocomplete="off" aria-label="类型" data-testid="project-genre-input" placeholder="长篇小说 / 非虚构 / 剧本"></label>
+          <label class="field" for="projectChapterTitleInput">第一章标题<input id="projectChapterTitleInput" name="chapterTitle" autocomplete="off" aria-label="第一章标题" data-testid="project-chapter-title-input" placeholder="第一章"></label>
         </div>
-        <label class="field">核心命题 / 简介<textarea id="projectPremiseInput" name="premise" placeholder="这本书想写什么？可以先留空。"></textarea></label>
-        <label class="field">风格偏好<textarea id="projectStyleInput" name="style" placeholder="例如：克制、具体、少解释心理。可以先留空。"></textarea></label>
-        <label class="field">开篇正文（可选；留空不会预置小说）<textarea id="projectOpeningInput" name="openingText" placeholder="如果你还没开始写，就保持为空。"></textarea></label>
+        <label class="field" for="projectPremiseInput">核心命题 / 简介<textarea id="projectPremiseInput" name="premise" autocomplete="off" aria-label="核心命题或简介" data-testid="project-premise-input" placeholder="这本书想写什么？可以先留空。"></textarea></label>
+        <label class="field" for="projectStyleInput">风格偏好<textarea id="projectStyleInput" name="style" autocomplete="off" aria-label="风格偏好" data-testid="project-style-input" placeholder="例如：克制、具体、少解释心理。可以先留空。"></textarea></label>
+        <label class="field" for="projectOpeningInput">开篇正文（可选；留空不会预置小说）<textarea id="projectOpeningInput" name="openingText" autocomplete="off" aria-label="开篇正文" data-testid="project-opening-input" placeholder="如果你还没开始写，就保持为空。"></textarea></label>
       </form>
       <div class="modal-actions"><button class="ghost-btn" type="button" id="cancelProjectBtn">取消</button><button class="primary-btn" type="submit" form="projectForm" id="submitProjectBtn">创建项目</button></div>
     </div>
@@ -337,11 +345,11 @@ INDEX_HTML = """<!doctype html>
   <div class="modal-backdrop hidden" id="annotationModal" data-testid="annotation-modal">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="annotationModalTitle">
       <header><h2 id="annotationModalTitle">添加批注</h2><button class="ghost-btn" type="button" id="closeAnnotationModalBtn">关闭</button></header>
-      <form id="annotationForm">
+      <form id="annotationForm" autocomplete="off">
         <input type="hidden" id="annotationFileInput">
         <input type="hidden" id="annotationBlockInput">
-        <label class="field">选中文本<textarea id="annotationSelectedInput" required></textarea></label>
-        <label class="field">批注内容<textarea id="annotationBodyInput" required placeholder="写下你的修改意见"></textarea></label>
+        <label class="field" for="annotationSelectedInput">选中文本<textarea id="annotationSelectedInput" required autocomplete="off" aria-label="选中文本" data-testid="annotation-selected-input"></textarea></label>
+        <label class="field" for="annotationBodyInput">批注内容<textarea id="annotationBodyInput" required autocomplete="off" aria-label="批注内容" data-testid="annotation-body-input" placeholder="写下你的修改意见"></textarea></label>
       </form>
       <div class="modal-actions"><button class="ghost-btn" type="button" id="cancelAnnotationBtn">取消</button><button class="primary-btn" type="submit" form="annotationForm" id="submitAnnotationBtn">保存批注</button></div>
     </div>
