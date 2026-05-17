@@ -9,6 +9,9 @@
 # Local runnable manuscript workspaces generated from read-only sources
 /local-workspaces/
 
+# Local QA/e2e evidence bundles
+/test-artifacts/
+
 # Python
 __pycache__/
 *.py[cod]

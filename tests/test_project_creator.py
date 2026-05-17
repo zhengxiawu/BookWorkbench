@@ -62,6 +62,32 @@ class ProjectCreatorTests(unittest.TestCase):
             self.assertIn("revise-with-annotations", runtime.skills)
             self.assertEqual(runtime.skills["revise-with-annotations"].path, project / ".codex" / "skills" / "revise-with-annotations" / "SKILL.md")
 
+    def test_powerbook_guide_mode_creates_full_chapter_and_local_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = create_book_project(
+                Path(tmp) / "workspace",
+                title="权力测试书",
+                slug="powerbook-guide",
+                mode="powerbook-guide",
+                premise="我希望按 PowerBook / Codex 写书闭环，从权力是什么开始生成完整理论章节。",
+                opening_text="Gemini 3.1 Pro、claim register、AUTHOR-NOTE、逐章内嵌批注闭环。",
+                create_baseline_commit=True,
+            )
+            project = Path(result["root"])
+            chapter = (project / "chapters" / "ch01.md").read_text(encoding="utf-8")
+
+            self.assertEqual(result["plan"]["mode"], "powerbook-guide")
+            self.assertTrue(result["baselineCommitCreated"], result)
+            self.assertTrue((project / "AGENTS.md").exists())
+            self.assertTrue((project / "WORKFLOW.md").exists())
+            self.assertTrue((project / "theory" / "core_definitions.md").exists())
+            self.assertTrue((project / "claims" / "claim_register.yaml").exists())
+            self.assertTrue((project / ".bookai" / "powerbook-guide.json").exists())
+            self.assertGreater(chapter.count("mw:block"), 7)
+            self.assertGreater(len(chapter), 1500)
+            self.assertIn("权力，是稳定改写他人行动空间的能力", chapter)
+
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -223,6 +223,8 @@ def cmd_create_project(args: argparse.Namespace) -> int:
             style=args.style,
             chapter_title=args.chapter_title,
             opening_text=args.opening_text,
+            mode=args.mode,
+            create_baseline_commit=args.baseline_commit,
         )
     )
     return 0
@@ -386,6 +388,8 @@ def build_parser() -> argparse.ArgumentParser:
     create_project.add_argument("--style", default="")
     create_project.add_argument("--chapter-title", default="第一章")
     create_project.add_argument("--opening-text", default="")
+    create_project.add_argument("--mode", default="standard", choices=["standard", "powerbook-guide"])
+    create_project.add_argument("--baseline-commit", action="store_true", help="Initialize a clean Git baseline commit after project creation")
     create_project.set_defaults(func=cmd_create_project)
 
     import_powerbook = sub.add_parser("import-powerbook", help="Import a read-only PowerBook writing project into a BookWorkbench workspace")

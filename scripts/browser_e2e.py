@@ -61,7 +61,7 @@ class FakeCodexClient:
                         "targetBlockId": "ch01-p001",
                         "operation": "replace_block",
                         "beforeHash": "sha256:6db580",
-                        "afterText": "第一段正文，先把抽象术语放回普通人能看见的处境里。",
+                        "afterText": "第一段正文，先把抽象术语放回普通人能看见的处境里。\n\n换句话说，权力不是一个远处的名词，而是会改变普通人下一步动作的稳定价格表。",
                         "reason": "fake PowerBook workflow proposal for browser e2e",
                     }
                 ],

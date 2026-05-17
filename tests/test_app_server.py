@@ -90,7 +90,7 @@ class FakeCodexClient:
                         "targetBlockId": "ch01-p001",
                         "operation": "replace_block",
                         "beforeHash": "sha256:6db580",
-                        "afterText": "第一段正文，先把抽象术语放回普通人能看见的处境里。",
+                        "afterText": "第一段正文，先把抽象术语放回普通人能看见的处境里。\n\n换句话说，权力不是一个远处的名词，而是会改变普通人下一步动作的稳定价格表。",
                         "reason": "fake PowerBook workflow proposal",
                     }
                 ],
@@ -187,6 +187,19 @@ class FakeCodexClient:
         }
 
 
+
+def git_count(root: Path) -> int:
+    return int(subprocess.check_output(["git", "rev-list", "--count", "HEAD"], cwd=root, text=True).strip())
+
+
+def git_last_commit_files(root: Path) -> set[str]:
+    output = subprocess.check_output(["git", "show", "--name-only", "--format=", "HEAD"], cwd=root, text=True)
+    return {line.strip() for line in output.splitlines() if line.strip()}
+
+
+def git_status_short(root: Path) -> str:
+    return subprocess.check_output(["git", "status", "--short"], cwd=root, text=True).strip()
+
 def post_json(base_url: str, path: str, payload: dict) -> dict:
     data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
@@ -275,6 +288,9 @@ class WorkspaceModeAppServerTests(unittest.TestCase):
         self.assertEqual(project["open"], True)
         self.assertIn("chapters/ch01.md", project["blocks"])
         self.assertEqual(chapter["blocks"]["ch01-p001"]["text"], "")
+        self.assertTrue(created["baselineCommitCreated"])
+        self.assertEqual(git_count(Path(created["root"])), 1)
+        self.assertEqual(git_status_short(Path(created["root"])), "")
         self.assertTrue((Path(created["root"]) / ".bookai" / "discussions.jsonl").exists())
         self.assertTrue((Path(created["root"]) / ".codex" / "skills" / "revise-with-annotations" / "SKILL.md").exists())
         self.assertEqual(discussions["discussions"], [])
@@ -309,6 +325,42 @@ class WorkspaceModeAppServerTests(unittest.TestCase):
 
         self.assertIn('if (view === "editor" && hasProject() && !state.currentChapter)', html)
         self.assertIn("if (first) loadChapter(first).catch(showError)", html)
+
+    def test_create_powerbook_guide_project_builds_full_first_chapter_and_workflow_assets(self) -> None:
+        initial = "我想从权力是什么开始，按 PowerBook / Codex 写书闭环生成一本理论书；需要 claim register、AUTHOR-NOTE 流程和 Gemini 3.1 Pro 修订。"
+        created = self.post(
+            "/api/projects/create",
+            {
+                "title": "权力测试书",
+                "slug": "powerbook-guide-book",
+                "mode": "powerbook-guide",
+                "genre": "理论非虚构",
+                "premise": initial,
+                "openingText": initial,
+            },
+        )
+        project_root = Path(created["root"])
+        opened = self.post("/api/projects/open", {"relativePath": "powerbook-guide-book"})
+        chapter = self.get("/api/chapters/" + urllib.parse.quote("chapters/ch01.md", safe=""))
+
+        self.assertEqual(created["plan"]["mode"], "powerbook-guide")
+        self.assertTrue(created["baselineCommitCreated"], created)
+        self.assertEqual(git_count(project_root), 1)
+        self.assertEqual(git_status_short(project_root), "")
+        self.assertTrue((project_root / "AGENTS.md").exists())
+        self.assertTrue((project_root / "WORKFLOW.md").exists())
+        self.assertTrue((project_root / "theory" / "core_definitions.md").exists())
+        self.assertTrue((project_root / "claims" / "claim_register.yaml").exists())
+        self.assertTrue((project_root / "reviews" / "inbox" / "README.md").exists())
+        self.assertTrue((project_root / ".bookai" / "powerbook-guide.json").exists())
+        self.assertIn("PowerBookGuide", opened["project"]["powerbookWorkflow"]["source"])
+        self.assertEqual(opened["project"]["powerbookWorkflow"]["chapterTarget"], "chapters/ch01.md")
+        self.assertGreater(chapter["wordCount"], 1200)
+        self.assertGreaterEqual(len(chapter["blocks"]), 8)
+        chapter_text = (project_root / "chapters" / "ch01.md").read_text(encoding="utf-8")
+        self.assertIn("# 第一章 权力是什么", chapter_text)
+        self.assertIn("权力，是稳定改写他人行动空间的能力", chapter_text)
+        self.assertNotIn("工作流说明", chapter["blocks"]["ch01-p001"]["text"])
 
     def test_create_discussion_writes_sidecar_and_not_chapter(self) -> None:
         created = self.post(
@@ -420,6 +472,10 @@ class AppServerTests(unittest.TestCase):
         self.assertIn("loadSidecars", html)
         visible_html = re.sub(r"<(script|style)\b.*?</\1>", "", html, flags=re.S)
         self.assertNotIn("sidecar", visible_html)
+        self.assertNotIn("AGENTS", visible_html)
+        self.assertNotIn("WORKFLOW", visible_html)
+        self.assertNotIn("PatchProposal", visible_html)
+        self.assertNotIn("Runtime", visible_html)
         self.assertNotIn("my-first-book", html)
         self.assertNotIn("⌘K", html)
         self.assertNotIn("PDF", html)
@@ -623,6 +679,48 @@ class AppServerTests(unittest.TestCase):
                 server.server_close()
                 thread.join(timeout=2)
 
+    def test_powerbook_workflow_falls_back_to_local_patch_when_codex_times_out(self) -> None:
+        class TimeoutCodex(FakeCodexClient):
+            def run_patch_proposal_turn(self, **kwargs):  # noqa: ANN003
+                self.patch_probe_calls.append(kwargs)
+                return {"ok": False, "error": "timeout", "patchProposal": None, "patchValidation": {"valid": False, "issues": [{"code": "timeout", "message": "timeout"}]}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = write_minimal_powerbook(Path(tmp) / "PowerBook")
+            workspace = Path(tmp) / "workspace"
+            project = Path(import_powerbook_project(source, workspace, slug="powerbook-test")["root"])
+            server = create_server(
+                project,
+                workspace_root=workspace,
+                builtin_skills_root=SKILLS,
+                port=0,
+                codex_client=TimeoutCodex(),
+                local_token="test-token",
+                quiet=True,
+            )
+            host, port = server.server_address[:2]
+            base_url = f"http://{host}:{port}"
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                result = post_json(
+                    base_url,
+                    "/api/workflows/powerbook/gemini-chapter",
+                    {"file": "chapters/ch01_power.md", "timeoutSeconds": 1},
+                )
+                preview = post_json(base_url, "/api/patch/preview", {"patch": result["output"]})
+
+                self.assertEqual(result["source"], "local-workflow-fallback")
+                self.assertTrue(result["workflow"]["localFallback"])
+                self.assertIn("timeout", result["workflow"]["fallbackReason"])
+                self.assertTrue(preview["validation"]["valid"], preview)
+                self.assertGreaterEqual(len(result["output"]["changes"]), 1)
+                self.assertIn("本地安全兜底", result["output"]["summary"])
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
     def test_project_annotations_chapter_and_audit_endpoints(self) -> None:
         project = self.get("/api/project")
         annotations = self.get("/api/annotations?include_resolved=1")
@@ -721,6 +819,9 @@ class AppServerTests(unittest.TestCase):
             self.assertIn("压进了信封", chapter_text)
             self.assertIn("project.created", [event["type"] for event in audit["events"]])
             self.assertIn("patch.applied", [event["type"] for event in audit["events"]])
+            self.assertEqual(git_count(new_root), 2)
+            self.assertIn("chapters/ch01.md", git_last_commit_files(new_root))
+            self.assertNotIn("book.spec.md", git_last_commit_files(new_root))
         finally:
             self.base_url = old_base
             new_server.shutdown()

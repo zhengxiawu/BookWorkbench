@@ -95,6 +95,18 @@ def _powerbook_status_overrides(root: Path) -> Dict[str, str]:
     return overrides
 
 
+def _powerbook_guide_status_overrides(root: Path) -> Dict[str, str]:
+    guide_path = root / ".bookai" / "powerbook-guide.json"
+    if not guide_path.exists():
+        return {}
+    try:
+        guide = json.loads(guide_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    target = guide.get("chapterTarget") if isinstance(guide, dict) else None
+    return {target: "draft"} if isinstance(target, str) and target else {}
+
+
 def _safe_project_file(root: Path, file_path: str) -> Path:
     project_root = root.resolve()
     full_path = (root / file_path).resolve()
@@ -278,6 +290,7 @@ def load_project(root: str | Path) -> ProjectContext:
     status_path = project_root / ".bookai" / "chapter-status.yaml"
     annotations = _load_annotations(project_root / ".bookai" / "annotations.jsonl")
     chapter_status = load_chapter_status(_read_optional(status_path))
+    chapter_status.update(_powerbook_guide_status_overrides(project_root))
     for file_path, status in _powerbook_status_overrides(project_root).items():
         if chapter_status.get(file_path, "unreviewed") == "unreviewed":
             chapter_status[file_path] = status

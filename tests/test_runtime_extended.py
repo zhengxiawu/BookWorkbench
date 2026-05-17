@@ -490,6 +490,37 @@ class ExtendedRuntimeTests(unittest.TestCase):
             self.assertIn("##", before)
             self.assertEqual(before, after)
 
+    def test_deterministic_fallback_never_replaces_inside_author_note_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self.copy_sample(Path(tmp))
+            chapter = project / "chapters" / "ch05.md"
+            chapter.write_text(
+                "# 测试章节\n\n<!-- mw:block id=ch05-p999 hash=sha256:d28f14 -->\nAUTHOR-NOTE 批注块：这不是正文。\n",
+                encoding="utf-8",
+            )
+            annotations_path = project / ".bookai" / "annotations.jsonl"
+            annotations_path.write_text(
+                json.dumps(
+                    {
+                        "id": "AN-EDGE",
+                        "file": "chapters/ch05.md",
+                        "target": {"blockId": "ch05-p999", "selectedText": "AUTH", "beforeHash": "sha256:d28f14"},
+                        "body": {"text": "改得具体一点", "type": "style", "priority": "medium"},
+                        "metadata": {"status": "open"},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            patch = RuntimeOrchestrator(project).run_skill("revise-with-annotations", annotation_ids=["AN-EDGE"])["output"]
+            after_text = patch["changes"][0]["afterText"]
+
+            self.assertIn("AUTHOR-NOTE", after_text)
+            self.assertNotIn("他停了一下，指节抵住桌沿，把眼前的物件慢慢推回原处。OR-NOTE", after_text)
+            self.assertTrue(after_text.endswith("把眼前的物件慢慢推回原处。"), after_text)
+
+
 
 if __name__ == "__main__":
     unittest.main()

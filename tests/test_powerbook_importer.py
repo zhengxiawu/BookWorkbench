@@ -198,6 +198,22 @@ review_status: "revised"
             self.assertEqual(patch["changes"][-1]["operation"], "insert_after_block")
             self.assertNotIn("mw:block", patch["changes"][0]["afterText"])
 
+    def test_local_powerbook_workflow_fallback_is_runtime_valid_and_substantial(self) -> None:
+        from book_workbench.powerbook_workflow import build_powerbook_local_chapter_patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = write_minimal_powerbook(Path(tmp) / "PowerBook")
+            project = Path(import_powerbook_project(source, Path(tmp) / "workspace", slug="powerbook-test")["root"])
+            context = load_project(project)
+
+            patch = build_powerbook_local_chapter_patch(context, "chapters/ch01_power.md", reason="timeout")
+            result = validate_patch(context, patch)
+
+            self.assertTrue(result.valid, result.issues)
+            self.assertEqual(patch["workflow"]["source"], "local-workflow-fallback")
+            self.assertTrue(patch["workflow"]["localFallback"])
+            self.assertGreater(sum(len(change["afterText"]) for change in patch["changes"]), 120)
+
     def test_imported_source_annotation_blocks_stale_patch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             source = write_minimal_powerbook(Path(tmp) / "PowerBook")

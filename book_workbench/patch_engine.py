@@ -5,6 +5,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -68,6 +69,13 @@ def validate_patch(context: ProjectContext, patch: object, *, allow_reviewed: bo
         if annotation_id.startswith("USER-") or annotation_id in known_annotation_ids:
             continue
         issues.append(_validation_issue("unknown_source_annotation", f"Unknown source annotation: {annotation_id}"))
+
+    workflow = patch.get("workflow") if isinstance(patch.get("workflow"), dict) else {}
+    whole_chapter_intent = (
+        workflow.get("kind") == "trusted-powerbook-gemini-chapter"
+        or workflow.get("localFallback") is True
+        or patch.get("safety", {}).get("impactScope") == "current_chapter"
+    )
 
     rules_used = patch.get("rulesUsed", patch.get("rules_used", []))
     if rules_used is None:
@@ -225,6 +233,21 @@ def validate_patch(context: ProjectContext, patch: object, *, allow_reviewed: bo
                 )
             )
 
+    if whole_chapter_intent and changes and not any(issue.code == "missing_change_field" for issue in issues):
+        changed_text = "\n".join(str(change.get("afterText", "")) for change in changes if isinstance(change, dict))
+        changed_chars = len("".join(changed_text.split()))
+        changed_files = {str(change.get("file", "")) for change in changes if isinstance(change, dict)}
+        existing_chars = 0
+        for file_path in changed_files:
+            for block in (context.blocks.get(file_path) or {}).values():
+                existing_chars += len("".join(block.text.split()))
+        if existing_chars >= 800 and (len(changes) < 2 or changed_chars < 240):
+            issues.append(
+                _validation_issue(
+                    "low_quality_whole_chapter_patch",
+                    "Whole-chapter workflow proposals must contain a substantial, reviewable chapter revision instead of a tiny placeholder edit.",
+                )
+            )
 
     return ValidationResult(
         valid=not any(issue.severity == "error" for issue in issues),
@@ -360,14 +383,46 @@ def _deterministic_annotation_revision(block_text: str, selected_text: str | Non
         or "我坐在审讯室里，盯着对面的男人。他沉默，眼神里没有任何波动。" in block_text
     ):
         return "我坐在审讯室里，盯着对面的男人。他没有看我，只把纸杯沿一点点捏扁。"
-    target = selected_text if selected_text and selected_text in block_text else block_text
-    target = target.strip()
-    if not target:
+    selected = selected_text.strip() if selected_text else ""
+    target = selected if selected and selected in block_text else ""
+    if not block_text.strip():
         return "他停了一下，把手里的物件放回原处。"
     replacement = "他停了一下，指节抵住桌沿，把眼前的物件慢慢推回原处。"
-    if target in block_text:
+    if target and _safe_to_replace_selected_text(block_text, target):
         return block_text.replace(target, replacement, 1)
-    return f"{block_text.rstrip()}\n{replacement}"
+    if replacement in block_text:
+        return block_text
+    return f"{block_text.rstrip()}\n\n{replacement}"
+
+
+def _safe_to_replace_selected_text(block_text: str, selected_text: str) -> bool:
+    """Return whether a deterministic fallback may replace the exact selection.
+
+    Browser/Computer Use selection can land inside a word or marker.  The
+    fallback must never splice Chinese prose into half of `AUTHOR-NOTE` or any
+    other token; when uncertain it appends a clean sentence to the whole block.
+    """
+
+    if not selected_text.strip() or selected_text == block_text:
+        return True
+    if len(selected_text.strip()) < 8:
+        return False
+    lowered = block_text.lower()
+    if "author-note" in lowered or "authornote" in lowered or "auhornote" in lowered:
+        return False
+    start = block_text.find(selected_text)
+    if start < 0:
+        return False
+    end = start + len(selected_text)
+    before = block_text[start - 1] if start > 0 else ""
+    after = block_text[end] if end < len(block_text) else ""
+    if _is_ascii_word_char(before) or _is_ascii_word_char(after):
+        return False
+    return True
+
+
+def _is_ascii_word_char(value: str) -> bool:
+    return bool(value and re.match(r"[A-Za-z0-9_-]", value))
 
 def make_annotation_patch(context: ProjectContext, annotation_id: str) -> Dict:
     """Generate a conservative deterministic patch for a style annotation.
