@@ -176,7 +176,7 @@ def main() -> int:
                 expect(page.get_by_text("章节列表")).to_be_visible(timeout=5000)
                 expect(page.locator("#chapterRows").get_by_text("chapters/ch01.md")).to_be_visible()
 
-                page.get_by_text("打开 ›").first.click()
+                page.locator("#chapterRows tr").first.click()
                 expect(page.locator("#chapterSelect")).to_contain_text("第一章 门缝", timeout=5000)
                 page.screenshot(path=str(artifacts / "03-open-created-project.png"), full_page=True)
 
@@ -240,6 +240,23 @@ def main() -> int:
                 expect(page.locator("#view-diff")).to_be_visible(timeout=5000)
                 expect(page.locator("#patchValidity")).to_contain_text("通过", timeout=5000)
                 page.screenshot(path=str(artifacts / "08-fixture-diff-before-accept.png"), full_page=True)
+
+                # Regression checks for the previously no-op UI controls from fresh QA.
+                page.locator('[data-view="rules"]').click()
+                expect(page.locator("#view-rules")).to_be_visible(timeout=5000)
+                page.locator("#ruleFilterBtn").click()
+                expect(page.locator("#ruleFilterPanel")).to_be_visible(timeout=5000)
+                page.locator('[data-rule-filter="style"]').first.click()
+                expect(page.locator("#ruleFilterSummary")).to_contain_text("风格", timeout=5000)
+                page.locator('[data-view="editor"]').click()
+                page.locator('[data-annotation-tab="suggestions"]').click()
+                expect(page.locator("#annotationPanel")).to_contain_text("安全边界", timeout=5000)
+                page.locator('[data-view="diff"]').click()
+                page.locator("#toggleDiffReasonBtn").click()
+                page.wait_for_function("() => document.querySelector('#diffReasonCard')?.classList.contains('collapsed')")
+                page.locator("#toggleDiffReasonBtn").click()
+                page.wait_for_function("() => !document.querySelector('#diffReasonCard')?.classList.contains('collapsed')")
+
                 fixture_before_commits = git_count(workspace / "black-rain-after")
                 page.locator("#acceptPatchBtn").click()
                 expect(page.locator("#view-editor")).to_be_visible(timeout=5000)

@@ -372,6 +372,12 @@ class AppServerTests(unittest.TestCase):
         self.assertIn('批量应用（暂不可用）', html)
         self.assertIn('id="previewRuleImpactBtn" disabled', html)
         self.assertIn('预览影响（暂不可用）', html)
+        self.assertIn('id="ruleFilterBtn"', html)
+        self.assertIn('data-rule-filter="style"', html)
+        self.assertIn('id="toggleDiffReasonBtn"', html)
+        self.assertIn('data-annotation-tab="suggestions"', html)
+        self.assertIn('status-badge', html)
+        self.assertIn('timeoutSeconds: 30', script)
         self.assertIn('function codexStatusLabel(codex)', script)
         self.assertIn('pending_project_open: "打开项目后检测"', script)
         self.assertIn('await loadHealth().catch(() => {})', script)
@@ -417,7 +423,7 @@ class AppServerTests(unittest.TestCase):
     def test_ai_revise_uses_codex_patchproposal_when_runtime_valid(self) -> None:
         result = self.post(
             "/api/ai/revise",
-            {"annotationIds": ["AN-041"], "file": "chapters/ch05.md", "timeoutSeconds": 1},
+            {"annotationIds": ["AN-041"], "file": "chapters/ch05.md"},
         )
         fake = self.server.app.codex_client
 
@@ -426,6 +432,7 @@ class AppServerTests(unittest.TestCase):
         self.assertEqual(result["output"]["sourceAnnotations"], ["AN-041"])
         self.assertEqual(result["codex"]["patchValidation"], {"valid": True, "issues": []})
         self.assertEqual(fake.patch_probe_calls[-1]["cwd"], self.project.resolve())
+        self.assertEqual(fake.patch_probe_calls[-1]["timeout_seconds"], 30.0)
         self.assertIn("revise-with-annotations", fake.patch_probe_calls[-1]["prompt"])
         self.assertIn("AN-041", fake.patch_probe_calls[-1]["prompt"])
         self.assertNotIn("纸杯沿一点点捏扁", (self.project / "chapters" / "ch05.md").read_text(encoding="utf-8"))
