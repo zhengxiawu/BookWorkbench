@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
-from .annotation_engine import annotation_to_dict, classification_summary, open_annotations
+from .annotation_engine import annotation_to_dict, classification_summary, mark_annotations_resolved, open_annotations
 from .audit import AuditLog, utc_now
 from .git_service import GitError, amend_all, commit_all, ensure_repo
 from .patch_engine import apply_patch, make_annotation_patch, preview_diff, validate_patch
@@ -149,6 +149,23 @@ class RuntimeOrchestrator:
         if result.valid:
             files = self._patch_files(patch)
             write_block_index(self._reload_context())
+            patch_id = self._patch_id(patch)
+            source_annotations = self._source_annotations(patch)
+            resolved_annotations = mark_annotations_resolved(
+                self.project_root,
+                source_annotations,
+                patch_id=patch_id,
+                timestamp=utc_now(),
+            )
+            if resolved_annotations:
+                self._audit(
+                    {
+                        "type": "annotation.resolved",
+                        "patchId": patch_id,
+                        "annotationIds": resolved_annotations,
+                    }
+                )
+                self._reload_context()
             self._audit({"type": "patch.applied", "patchId": self._patch_id(patch), "files": files})
             try:
                 ensure_repo(self.project_root)
@@ -174,6 +191,11 @@ class RuntimeOrchestrator:
             "applied": result.valid,
             "commitError": commit_error,
         }
+
+    def _source_annotations(self, patch: object) -> List[str]:
+        if not isinstance(patch, dict) or not isinstance(patch.get("sourceAnnotations"), list):
+            return []
+        return [str(item) for item in patch["sourceAnnotations"] if isinstance(item, str)]
 
     def _select_annotations(
         self,

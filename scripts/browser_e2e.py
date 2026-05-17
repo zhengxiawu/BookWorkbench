@@ -171,7 +171,8 @@ def main() -> int:
                 user_project = workspace / "fog-letter"
                 expect(page.get_by_text("章节列表")).to_be_visible(timeout=5000)
                 expect(page.get_by_test_id("empty-workspace")).to_be_hidden(timeout=5000)
-                expect(page.locator("#chapterRows").get_by_text("本地章节")).to_be_visible()
+                expect(page.locator("#chapterRows").get_by_text("第一章 门缝")).to_be_visible()
+                expect(page.locator("#chapterRows .chapter-words").first).not_to_have_text("—")
                 assert "还没有书稿项目" not in page.locator("#dashboardMain").inner_text(), "created project must replace the empty workspace state"
                 assert page.evaluate("() => window.BookWorkbench.state.project?.summary?.relativePath") == "fog-letter", "created project should open automatically"
                 assert (user_project / ".bookai" / "discussions.jsonl").exists(), "new projects must include discussion sidecar"
@@ -186,7 +187,7 @@ def main() -> int:
                 expect(page.get_by_test_id("project-card").filter(has_text="雾中来信")).to_be_visible(timeout=5000)
                 page.get_by_test_id("project-card").filter(has_text="雾中来信").click()
                 expect(page.get_by_text("章节列表")).to_be_visible(timeout=5000)
-                expect(page.locator("#chapterRows").get_by_text("本地章节")).to_be_visible()
+                expect(page.locator("#chapterRows").get_by_text("第一章 门缝")).to_be_visible()
 
                 page.locator("#chapterRows tr").first.click()
                 expect(page.locator("#chapterSelect")).to_contain_text("第一章 门缝", timeout=5000)
@@ -247,6 +248,7 @@ def main() -> int:
                 assert "没有署名的空白处" in final_text, "accepted patch must apply codex-generated main path revision"
                 assert opening not in final_text, "accepted patch should replace the annotated direct-emotion wording"
                 assert after_commits == before_commits + 1, "accepted patch must create git commit"
+                assert '"status": "resolved"' in (user_project / ".bookai" / "annotations.jsonl").read_text(encoding="utf-8"), "accepted patch must resolve source annotation"
                 assert_block_index_matches(user_project, "chapters/ch01.md", "ch01-p001")
                 page.screenshot(path=str(artifacts / "07-user-book-after-accept-commit.png"), full_page=True)
 
@@ -255,8 +257,8 @@ def main() -> int:
                 page.goto(base_url, wait_until="networkidle")
                 expect(page.get_by_test_id("project-card").filter(has_text="黑雨之后")).to_be_visible(timeout=5000)
                 page.evaluate("() => window.BookWorkbench.openProject('black-rain-after')")
-                page.wait_for_function("() => window.BookWorkbench.state?.project?.summary?.slug === 'black-rain-after' && document.querySelector('#chapterRows')?.textContent.includes('第 5 章')")
-                page.locator("#chapterRows tr").filter(has_text="第 5 章").click()
+                page.wait_for_function("() => window.BookWorkbench.state?.project?.summary?.slug === 'black-rain-after' && document.querySelector('#chapterRows')?.textContent.includes('第五章')")
+                page.locator("#chapterRows tr").filter(has_text="第五章").click()
                 expect(page.locator("#chapterSelect")).to_contain_text("第五章", timeout=5000)
                 before_fixture = (workspace / "black-rain-after" / "chapters" / "ch05.md").read_text(encoding="utf-8")
                 page.evaluate("""
@@ -310,6 +312,7 @@ def main() -> int:
                 fixture_after_commits = git_count(workspace / "black-rain-after")
                 assert "纸杯沿一点点捏扁" in fixture_final, "accepted fixture patch must apply expected AN-041 text"
                 assert fixture_after_commits == fixture_before_commits + 1, "accepted fixture patch must create git commit"
+                assert '"status": "resolved"' in (workspace / "black-rain-after" / ".bookai" / "annotations.jsonl").read_text(encoding="utf-8"), "fixture source annotation should resolve after accept"
                 assert_block_index_matches(workspace / "black-rain-after", "chapters/ch05.md", "ch05-p018")
                 page.screenshot(path=str(artifacts / "09-fixture-after-accept-commit.png"), full_page=True)
 

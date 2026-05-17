@@ -61,7 +61,12 @@ class ProjectContext:
     blocks: Dict[str, Dict[str, MarkdownBlock]]
 
     def status_for_file(self, file_path: str) -> str:
-        return self.chapter_status.get(file_path, "draft")
+        status = self.chapter_status.get(file_path, "draft")
+        return {
+            "annotated": "unreviewed",
+            "briefed": "unreviewed",
+            "revised": "unreviewed",
+        }.get(status, status)
 
     def block(self, file_path: str, block_id: str) -> MarkdownBlock:
         return self.blocks[file_path][block_id]

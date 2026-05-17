@@ -113,8 +113,10 @@ class ExtendedRuntimeTests(unittest.TestCase):
             self.assertTrue(accepted["applied"], accepted)
             self.assertIn("纸杯沿一点点捏扁", text)
             self.assertIn("patch.previewed", [event["type"] for event in events])
+            self.assertIn("annotation.resolved", [event["type"] for event in events])
             self.assertIn("patch.applied", [event["type"] for event in events])
             self.assertIn("git.committed", [event["type"] for event in events])
+            self.assertEqual(load_project(project).annotations[0].status, "resolved")
             self.assert_block_index_matches_chapter(project, "chapters/ch05.md", "ch05-p018")
 
     def test_accept_patch_commits_audit_events_and_leaves_clean_checkpoint(self) -> None:
@@ -137,6 +139,8 @@ class ExtendedRuntimeTests(unittest.TestCase):
             self.assertEqual(dirty, "")
             self.assertIn(".bookai/audit-log.jsonl", show)
             self.assertIn(".bookai/block-index.json", show)
+            self.assertIn(".bookai/annotations.jsonl", show)
+            self.assertEqual(load_project(project).annotations[0].status, "resolved")
             self.assert_block_index_matches_chapter(project, "chapters/ch05.md", "ch05-p018")
 
     def test_runtime_accept_patch_rejects_and_audits_without_mutation(self) -> None:

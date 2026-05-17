@@ -73,6 +73,28 @@ def _load_rules(path: Path) -> List[Rule]:
     ]
 
 
+def _powerbook_status_overrides(root: Path) -> Dict[str, str]:
+    import_path = root / ".bookai" / "powerbook-import.json"
+    if not import_path.exists():
+        return {}
+    try:
+        imported = json.loads(import_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    chapters = imported.get("chapters") if isinstance(imported, dict) else []
+    overrides: Dict[str, str] = {}
+    if not isinstance(chapters, list):
+        return overrides
+    for chapter in chapters:
+        if not isinstance(chapter, dict):
+            continue
+        target = chapter.get("target")
+        status = chapter.get("reviewStatus") or chapter.get("bookWorkbenchStatus")
+        if isinstance(target, str) and isinstance(status, str) and status:
+            overrides[target] = status
+    return overrides
+
+
 def _safe_project_file(root: Path, file_path: str) -> Path:
     project_root = root.resolve()
     full_path = (root / file_path).resolve()
@@ -204,6 +226,50 @@ def write_block_index(context: ProjectContext) -> Path:
     return path
 
 
+def markdown_title(root: Path, file_path: str) -> str:
+    """Return the human chapter title from a Markdown chapter file."""
+
+    chapter_path = safe_chapter_path(root, file_path)
+    text = chapter_path.read_text(encoding="utf-8")
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# "):
+            return stripped[2:].strip() or Path(file_path).stem
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped == "---" or ":" not in stripped:
+            continue
+        key, value = stripped.split(":", 1)
+        if key.strip() == "title":
+            title = value.strip().strip('"').strip("'")
+            if title:
+                return title
+    return Path(file_path).stem
+
+
+def manuscript_word_count(text: str) -> int:
+    """Count visible manuscript characters for Chinese-first dashboard stats."""
+
+    without_anchors = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+    return len(re.sub(r"\s+", "", without_anchors))
+
+
+def chapter_summaries(context: ProjectContext) -> Dict[str, Dict[str, int | str]]:
+    """Return title, display status, normalized edit status, and word count."""
+
+    summaries: Dict[str, Dict[str, int | str]] = {}
+    for file_path, blocks in sorted(context.blocks.items()):
+        body = "\n".join(block.text for block in blocks.values())
+        summaries[file_path] = {
+            "title": markdown_title(context.root, file_path),
+            "status": context.chapter_status.get(file_path, "draft"),
+            "editStatus": context.status_for_file(file_path),
+            "blockCount": len(blocks),
+            "wordCount": manuscript_word_count(body),
+        }
+    return summaries
+
+
 def load_project(root: str | Path) -> ProjectContext:
     project_root = Path(root).resolve()
     if not project_root.exists():
@@ -212,6 +278,9 @@ def load_project(root: str | Path) -> ProjectContext:
     status_path = project_root / ".bookai" / "chapter-status.yaml"
     annotations = _load_annotations(project_root / ".bookai" / "annotations.jsonl")
     chapter_status = load_chapter_status(_read_optional(status_path))
+    for file_path, status in _powerbook_status_overrides(project_root).items():
+        if chapter_status.get(file_path, "unreviewed") == "unreviewed":
+            chapter_status[file_path] = status
     rules = _load_rules(project_root / "rules.yaml")
 
     blocks: Dict[str, Dict[str, MarkdownBlock]] = {}

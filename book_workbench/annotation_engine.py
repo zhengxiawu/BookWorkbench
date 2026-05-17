@@ -1,8 +1,10 @@
-"""Annotation querying and lightweight classification."""
+"""Annotation querying, status updates, and lightweight classification."""
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict
+from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 from .models import Annotation, ProjectContext
@@ -62,3 +64,45 @@ def classification_summary(annotations: Iterable[Annotation]) -> Dict[str, int]:
         category = classify_annotation(annotation)
         summary[category] = summary.get(category, 0) + 1
     return summary
+
+
+def mark_annotations_resolved(
+    root: str | Path,
+    annotation_ids: Iterable[str],
+    *,
+    patch_id: str = "",
+    timestamp: str = "",
+) -> List[str]:
+    """Mark cited sidecar annotations resolved in-place.
+
+    The function rewrites ``.bookai/annotations.jsonl`` so Runtime commits can
+    include the manuscript change, refreshed block index, audit events, and
+    annotation state in the same checkpoint. Unknown ``USER-*`` sources are
+    ignored because they are explicit instructions rather than sidecar rows.
+    """
+
+    wanted = {item for item in annotation_ids if item and not item.startswith("USER-")}
+    if not wanted:
+        return []
+    path = Path(root) / ".bookai" / "annotations.jsonl"
+    if not path.exists():
+        return []
+    rows = []
+    changed: List[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        raw = json.loads(line)
+        metadata = raw.setdefault("metadata", {})
+        annotation_id = raw.get("id")
+        if annotation_id in wanted and metadata.get("status", "open") == "open":
+            metadata["status"] = "resolved"
+            if patch_id:
+                metadata["resolvedByPatch"] = patch_id
+            if timestamp:
+                metadata["resolvedAt"] = timestamp
+            changed.append(str(annotation_id))
+        rows.append(raw)
+    if changed:
+        path.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n", encoding="utf-8")
+    return changed

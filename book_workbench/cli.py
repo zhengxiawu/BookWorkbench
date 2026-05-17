@@ -12,6 +12,7 @@ from .audit import AuditLog
 from .codex_client import CodexAppServerClient
 from .codex_skill_eval import run_codex_skill_evals
 from .patch_engine import load_patch, make_annotation_patch, validate_patch as validate_patch_proposal
+from .powerbook_importer import import_powerbook_project
 from .project import load_project
 from .project_creator import create_book_project
 from .rule_engine import applicable_rules, propose_rules_from_annotations, rule_to_dict
@@ -227,6 +228,19 @@ def cmd_create_project(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_import_powerbook(args: argparse.Namespace) -> int:
+    print_json(
+        import_powerbook_project(
+            args.source,
+            args.workspace,
+            slug=args.slug,
+            title=args.title,
+            overwrite=args.overwrite,
+        )
+    )
+    return 0
+
+
 def _add_project_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project", required=True)
 
@@ -373,6 +387,14 @@ def build_parser() -> argparse.ArgumentParser:
     create_project.add_argument("--chapter-title", default="第一章")
     create_project.add_argument("--opening-text", default="")
     create_project.set_defaults(func=cmd_create_project)
+
+    import_powerbook = sub.add_parser("import-powerbook", help="Import a read-only PowerBook writing project into a BookWorkbench workspace")
+    import_powerbook.add_argument("--source", required=True, help="Read-only PowerBook source root")
+    import_powerbook.add_argument("--workspace", required=True, help="BookWorkbench workspace root to receive the converted project")
+    import_powerbook.add_argument("--slug", default="powerbook")
+    import_powerbook.add_argument("--title")
+    import_powerbook.add_argument("--overwrite", action="store_true")
+    import_powerbook.set_defaults(func=cmd_import_powerbook)
 
     return parser
 

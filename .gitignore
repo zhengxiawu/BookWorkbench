@@ -6,6 +6,9 @@
 # Local input archives after extraction
 *.zip
 
+# Local runnable manuscript workspaces generated from read-only sources
+/local-workspaces/
+
 # Python
 __pycache__/
 *.py[cod]

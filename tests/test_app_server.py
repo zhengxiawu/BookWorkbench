@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -248,6 +249,18 @@ class WorkspaceModeAppServerTests(unittest.TestCase):
         self.assertIn('data-testid="project-list-panel"', html)
         self.assertIn("请选择一个已有书稿项目，或新建自己的项目。", html)
 
+    def test_open_project_script_refreshes_sidecar_counts_on_dashboard(self) -> None:
+        html = self.get("/")
+
+        self.assertIn("const sidecars = loadSidecars().catch(showError)", html)
+        self.assertIn('if (state.activeView === "dashboard") renderDashboard()', html)
+
+    def test_editor_nav_auto_loads_first_chapter(self) -> None:
+        html = self.get("/")
+
+        self.assertIn('if (view === "editor" && hasProject() && !state.currentChapter)', html)
+        self.assertIn("if (first) loadChapter(first).catch(showError)", html)
+
     def test_create_discussion_writes_sidecar_and_not_chapter(self) -> None:
         created = self.post(
             "/api/projects/create",
@@ -351,10 +364,13 @@ class AppServerTests(unittest.TestCase):
         self.assertIn("先审后改", html)
         self.assertIn("本地目录名（可留空）", html)
         self.assertIn("快捷键", html)
+        self.assertNotIn("PowerBook 工作流", html)
         self.assertNotIn("Manuscript Workbench", html)
         self.assertNotIn("Patch only", html)
         self.assertNotIn("Runtime Patch", html)
-        self.assertNotIn("sidecar", html)
+        self.assertIn("loadSidecars", html)
+        visible_html = re.sub(r"<(script|style)\b.*?</\1>", "", html, flags=re.S)
+        self.assertNotIn("sidecar", visible_html)
         self.assertNotIn("my-first-book", html)
         self.assertNotIn("⌘K", html)
         self.assertNotIn("PDF", html)
@@ -383,10 +399,14 @@ class AppServerTests(unittest.TestCase):
         self.assertIn('id="previewRuleImpactBtn" disabled', html)
         self.assertIn('预览影响（暂不可用）', html)
         self.assertIn('class="table-scroll"', html)
-        self.assertIn('.chapter-table th:nth-child(4), .chapter-table td:nth-child(4) { min-width: 88px; text-align: right; }', html)
+        self.assertIn('.chapter-table th:nth-child(4), .chapter-table td:nth-child(4) { min-width: 112px; text-align: right; white-space: nowrap; }', html)
+        self.assertIn('class="chapter-words"', html)
+        self.assertIn('function chapterTitle(file)', script)
+        self.assertIn('function powerbookWorkflowHtml()', script)
         self.assertIn('writing-mode: horizontal-tb', html)
         self.assertIn('word-break: keep-all', html)
-        self.assertIn('.metric { padding: 18px; min-height: 136px; min-width: 0; overflow: hidden; display: grid', html)
+        self.assertIn('.metric { padding: 16px; min-height: 118px; min-width: 0; overflow: hidden; display: grid', html)
+        self.assertIn('writing-mode: horizontal-tb !important', html)
         self.assertIn('id="ruleFilterBtn"', html)
         self.assertIn('data-rule-filter="style"', html)
         self.assertIn('id="toggleDiffReasonBtn"', html)
@@ -409,6 +429,9 @@ class AppServerTests(unittest.TestCase):
         self.assertIn('addEventListener("dblclick"', script)
         self.assertIn('function selectedBlockIdFromSelection()', script)
         self.assertIn('openAnnotationModal())', script)
+        self.assertIn('function selectedAnnotation() { const openItems = state.annotations.filter((item) => item.status === "open")', script)
+        self.assertIn('$("reviseCurrentBtn").disabled = openCount === 0', script)
+        self.assertIn('已闭环', script)
         self.assertNotIn('not_checked_until_project_open', html)
         with tempfile.NamedTemporaryFile("w", suffix=".js", encoding="utf-8", delete=False) as handle:
             handle.write(script)
@@ -463,6 +486,24 @@ class AppServerTests(unittest.TestCase):
         self.assertIn("AN-041", fake.patch_probe_calls[-1]["prompt"])
         self.assertNotIn("纸杯沿一点点捏扁", (self.project / "chapters" / "ch05.md").read_text(encoding="utf-8"))
 
+
+    def test_ai_revise_resolves_annotation_and_stale_patch_accept_is_disabled(self) -> None:
+        run = self.post(
+            "/api/ai/revise",
+            {"annotationIds": ["AN-041"], "file": "chapters/ch05.md"},
+        )
+        patch = run["output"]
+        first_preview = self.post("/api/patch/preview", {"patch": patch})
+        first_apply = self.post("/api/patch/apply", {"patch": patch})
+        second_preview = self.post("/api/patch/preview", {"patch": patch})
+
+        self.assertTrue(first_preview["validation"]["valid"], first_preview)
+        self.assertTrue(first_apply["applied"], first_apply)
+        self.assertFalse(second_preview["validation"]["valid"], second_preview)
+        self.assertTrue(any(issue["code"] == "hash_mismatch" for issue in second_preview["validation"]["issues"]))
+        annotations = self.get("/api/annotations?include_resolved=1")
+        self.assertEqual(annotations["annotations"][0]["status"], "resolved")
+
     def test_ai_revise_falls_back_when_codex_patchproposal_is_invalid(self) -> None:
         fake = self.server.app.codex_client
         fake.patch_mode = "invalid"
@@ -499,8 +540,13 @@ class AppServerTests(unittest.TestCase):
         audit = self.get("/api/audit")
 
         self.assertIn("chapters/ch05.md", project["blocks"])
+        self.assertIn("chapterSummaries", project)
+        self.assertEqual(project["chapterSummaries"]["chapters/ch05.md"]["title"], "第五章 证据链")
+        self.assertGreater(project["chapterSummaries"]["chapters/ch05.md"]["wordCount"], 0)
         self.assertEqual(annotations["annotations"][0]["id"], "AN-041")
         self.assertEqual(chapter["status"], "draft")
+        self.assertEqual(chapter["title"], "第五章 证据链")
+        self.assertGreater(chapter["wordCount"], 0)
         self.assertIn("ch05-p018", chapter["blocks"])
         self.assertEqual(audit["events"], [])
 
@@ -513,6 +559,7 @@ class AppServerTests(unittest.TestCase):
         preview = self.post("/api/patch/preview", {"patch": patch})
         apply_result = self.post("/api/patch/apply", {"patch": patch})
         chapter_text = (self.project / "chapters" / "ch05.md").read_text(encoding="utf-8")
+        annotations = self.get("/api/annotations?include_resolved=1")
         audit = self.get("/api/audit")
 
         self.assertEqual(run["skill"], "revise-with-annotations")
@@ -521,7 +568,18 @@ class AppServerTests(unittest.TestCase):
         self.assertIn("纸杯沿一点点捏扁", preview["diff"])
         self.assertTrue(apply_result["applied"], apply_result)
         self.assertIn("纸杯沿一点点捏扁", chapter_text)
+        self.assertEqual(annotations["annotations"][0]["status"], "resolved")
+        self.assertIn("annotation.resolved", [event["type"] for event in audit["events"]])
         self.assertIn("patch.applied", [event["type"] for event in audit["events"]])
+
+    def test_index_script_disables_accept_for_invalid_diff(self) -> None:
+        html = self.get("/")
+
+        self.assertIn('id="invalidPatchActions"', html)
+        self.assertIn("重新定位批注", html)
+        self.assertIn('$("acceptPatchBtn").disabled = isRejected || valid === undefined', html)
+        self.assertIn('textContent = isRejected ? "无法提交" : "接受并提交"', html)
+        self.assertIn('重新生成建议', html)
 
     def test_create_new_book_then_modify_first_chapter_flow(self) -> None:
         created = self.post(
