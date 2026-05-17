@@ -15,12 +15,12 @@ def write_black_rain_fixture(root: Path, *, init_git: bool = False) -> Path:
     (root / "chapters").mkdir(parents=True, exist_ok=True)
     (root / ".bookai").mkdir(parents=True, exist_ok=True)
     (root / "book.spec.md").write_text(
-        "# 《黑雨之后》Book SPEC\n\n"
+        "# 《黑雨之后》书稿设定\n\n"
         "## 类型\n长篇悬疑 / 都市心理小说。\n\n"
         "## 核心命题\n一个人如何在不断失真的记忆、证据和关系中重新确认自己。\n",
         encoding="utf-8",
     )
-    (root / "style-guide.md").write_text("# Style Guide\n\n- 避免直接解释心理。\n", encoding="utf-8")
+    (root / "style-guide.md").write_text("# 风格指南\n\n- 避免直接解释心理。\n", encoding="utf-8")
     (root / "rules.yaml").write_text(
         "rules:\n"
         "  - id: R-018\n"

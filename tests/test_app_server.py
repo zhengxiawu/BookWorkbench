@@ -32,11 +32,11 @@ class FakeCodexClient:
     def health(self) -> dict:
         return {
             "ok": True,
-            "command": ["fake-codex", "app-server"],
+            "command": ["智能服务", "本地服务"],
             "error": None,
             "response": {
-                "userAgent": "book-workbench-test/0.1.0",
-                "codexHome": "/tmp/fake-codex-home",
+                "userAgent": "书稿工作台测试",
+                "codexHome": "/tmp/local-ai-home",
                 "platformFamily": "unix",
                 "platformOs": "test",
             },
@@ -222,16 +222,16 @@ class WorkspaceModeAppServerTests(unittest.TestCase):
     def test_create_project_lists_then_open_project(self) -> None:
         created = self.post(
             "/api/projects/create",
-            {"title": "我的第一本书", "slug": "my-first-book", "openingText": ""},
+            {"title": "我的第一本书", "slug": "wo-de-di-yi-ben-shu", "openingText": ""},
         )
         projects = self.get("/api/projects")
-        opened = self.post("/api/projects/open", {"relativePath": "my-first-book"})
+        opened = self.post("/api/projects/open", {"relativePath": "wo-de-di-yi-ben-shu"})
         project = self.get("/api/project")
         chapter = self.get("/api/chapters/" + urllib.parse.quote("chapters/ch01.md", safe=""))
         discussions = self.get("/api/discussions")
 
         self.assertEqual(created["summary"]["title"], "我的第一本书")
-        self.assertEqual([item["relativePath"] for item in projects["projects"]], ["my-first-book"])
+        self.assertEqual([item["relativePath"] for item in projects["projects"]], ["wo-de-di-yi-ben-shu"])
         self.assertTrue(opened["project"]["open"] if "open" in opened["project"] else True)
         self.assertEqual(project["open"], True)
         self.assertIn("chapters/ch01.md", project["blocks"])
@@ -345,9 +345,19 @@ class AppServerTests(unittest.TestCase):
         html = self.get("/")
         health = self.get("/api/health")
 
-        self.assertIn("BookWorkbench Local App", html)
-        self.assertIn("Manuscript Workbench", html)
-        self.assertIn("Patch / Diff 审核", html)
+        self.assertIn("书稿工作台本地版", html)
+        self.assertIn("书稿工作台", html)
+        self.assertIn("修改差异审核", html)
+        self.assertIn("先审后改", html)
+        self.assertIn("本地目录名（可留空）", html)
+        self.assertIn("快捷键", html)
+        self.assertNotIn("Manuscript Workbench", html)
+        self.assertNotIn("Patch only", html)
+        self.assertNotIn("Runtime Patch", html)
+        self.assertNotIn("sidecar", html)
+        self.assertNotIn("my-first-book", html)
+        self.assertNotIn("⌘K", html)
+        self.assertNotIn("PDF", html)
         self.assertIn('"test-token"', html)
         self.assertEqual(health["app"]["ok"], True)
         self.assertEqual(health["runtime"]["annotations"], 1)
@@ -372,6 +382,11 @@ class AppServerTests(unittest.TestCase):
         self.assertIn('批量应用（暂不可用）', html)
         self.assertIn('id="previewRuleImpactBtn" disabled', html)
         self.assertIn('预览影响（暂不可用）', html)
+        self.assertIn('class="table-scroll"', html)
+        self.assertIn('.chapter-table th:nth-child(4), .chapter-table td:nth-child(4) { min-width: 88px; text-align: right; }', html)
+        self.assertIn('writing-mode: horizontal-tb', html)
+        self.assertIn('word-break: keep-all', html)
+        self.assertIn('.metric { padding: 18px; min-height: 136px; min-width: 0; overflow: hidden; display: grid', html)
         self.assertIn('id="ruleFilterBtn"', html)
         self.assertIn('data-rule-filter="style"', html)
         self.assertIn('id="toggleDiffReasonBtn"', html)

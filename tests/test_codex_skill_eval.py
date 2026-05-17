@@ -17,7 +17,7 @@ from tests.test_fixtures import write_black_rain_fixture
 
 class FakeEvalCodexClient:
     def __init__(self, *, command=None, timeout_seconds=60.0, cwd=None):  # noqa: ANN001
-        self.command = command or ["fake-codex", "app-server"]
+        self.command = command or ["智能服务", "本地服务"]
         self.timeout_seconds = timeout_seconds
         self.cwd = cwd
 
@@ -235,7 +235,7 @@ class CodexSkillEvalTests(unittest.TestCase):
             summary = run_codex_skill_evals(
                 project=project,
                 output_dir=Path(tmp) / "artifacts",
-                command=["fake-codex", "app-server"],
+                command=["智能服务", "本地服务"],
                 timeout_seconds=2,
                 eval_ids=None,
                 client_factory=FakeEvalCodexClient,

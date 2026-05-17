@@ -363,7 +363,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve_cmd.add_argument("--open", action="store_true", help="Open the app URL in the default browser")
     serve_cmd.set_defaults(func=cmd_serve)
 
-    create_project = sub.add_parser("create-project", help="Create a new BookWorkbench manuscript project")
+    create_project = sub.add_parser("create-project", help="Create a new local manuscript project")
     create_project.add_argument("--workspace", required=True)
     create_project.add_argument("--title", required=True)
     create_project.add_argument("--slug")

@@ -78,7 +78,7 @@ def _title_from_book_spec(path: Path) -> str | None:
     if not path.exists():
         return None
     for line in path.read_text(encoding="utf-8").splitlines():
-        match = re.match(r"^#\s*(.+?)\s+Book SPEC\s*$", line.strip())
+        match = re.match(r"^#\s*(.+?)\s+(?:Book SPEC|书稿设定)\s*$", line.strip())
         if match:
             return match.group(1).strip()
     return None

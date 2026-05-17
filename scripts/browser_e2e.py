@@ -21,7 +21,7 @@ class FakeCodexClient:
         self.patch_calls = 0
 
     def health(self) -> dict:
-        return {"ok": True, "command": ["fake-codex", "app-server"], "error": None, "notifications": [], "durationMs": 1}
+        return {"ok": True, "command": ["智能服务", "本地服务"], "error": None, "notifications": [], "durationMs": 1}
 
     def list_skills(self, *, cwds, force_reload=True):  # noqa: ANN001
         root = Path(cwds[0])
@@ -171,7 +171,7 @@ def main() -> int:
                 user_project = workspace / "fog-letter"
                 expect(page.get_by_text("章节列表")).to_be_visible(timeout=5000)
                 expect(page.get_by_test_id("empty-workspace")).to_be_hidden(timeout=5000)
-                expect(page.locator("#chapterRows").get_by_text("chapters/ch01.md")).to_be_visible()
+                expect(page.locator("#chapterRows").get_by_text("本地章节")).to_be_visible()
                 assert "还没有书稿项目" not in page.locator("#dashboardMain").inner_text(), "created project must replace the empty workspace state"
                 assert page.evaluate("() => window.BookWorkbench.state.project?.summary?.relativePath") == "fog-letter", "created project should open automatically"
                 assert (user_project / ".bookai" / "discussions.jsonl").exists(), "new projects must include discussion sidecar"
@@ -186,7 +186,7 @@ def main() -> int:
                 expect(page.get_by_test_id("project-card").filter(has_text="雾中来信")).to_be_visible(timeout=5000)
                 page.get_by_test_id("project-card").filter(has_text="雾中来信").click()
                 expect(page.get_by_text("章节列表")).to_be_visible(timeout=5000)
-                expect(page.locator("#chapterRows").get_by_text("chapters/ch01.md")).to_be_visible()
+                expect(page.locator("#chapterRows").get_by_text("本地章节")).to_be_visible()
 
                 page.locator("#chapterRows tr").first.click()
                 expect(page.locator("#chapterSelect")).to_contain_text("第一章 门缝", timeout=5000)
@@ -198,7 +198,7 @@ def main() -> int:
                 discussion_text = "讨论：这一章要先保留悬疑，不要解释情绪，用信封和停顿表现压力。"
                 page.locator("#discussionTextInput").fill(discussion_text)
                 page.locator("#submitDiscussionBtn").click()
-                expect(page.get_by_test_id("discussion-card").filter(has_text="DS-001")).to_be_visible(timeout=5000)
+                expect(page.get_by_test_id("discussion-card").filter(has_text="讨论记录")).to_be_visible(timeout=5000)
                 assert discussion_text in (user_project / ".bookai" / "discussions.jsonl").read_text(encoding="utf-8")
                 assert (user_project / "chapters" / "ch01.md").read_text(encoding="utf-8") == before_discussion, "discussion must not mutate chapter"
                 page.screenshot(path=str(artifacts / "04-discussion-sidecar.png"), full_page=True)
@@ -228,7 +228,7 @@ def main() -> int:
                 expect(page.locator("#annotationSelectedInput")).to_have_value("心里很乱，想起过去很多事情。")
                 page.get_by_test_id("annotation-body-input").fill("这里太像 AI 了，不要解释内心，用动作表现。")
                 page.locator("#submitAnnotationBtn").click()
-                expect(page.locator("#annotationPanel").get_by_text("AN-001")).to_be_visible(timeout=5000)
+                expect(page.locator("#annotationPanel").get_by_text("批注 001")).to_be_visible(timeout=5000)
                 assert "这里太像 AI" in (user_project / ".bookai" / "annotations.jsonl").read_text(encoding="utf-8")
                 assert (user_project / "chapters" / "ch01.md").read_text(encoding="utf-8") == before_annotation, "annotation sidecar flow must not mutate chapter body"
                 page.screenshot(path=str(artifacts / "05-annotation-sidecar.png"), full_page=True)
@@ -255,8 +255,8 @@ def main() -> int:
                 page.goto(base_url, wait_until="networkidle")
                 expect(page.get_by_test_id("project-card").filter(has_text="黑雨之后")).to_be_visible(timeout=5000)
                 page.evaluate("() => window.BookWorkbench.openProject('black-rain-after')")
-                page.wait_for_function("() => window.BookWorkbench.state?.project?.summary?.slug === 'black-rain-after' && document.querySelector('#chapterRows')?.textContent.includes('chapters/ch05.md')")
-                page.locator("#chapterRows").get_by_text("chapters/ch05.md").click()
+                page.wait_for_function("() => window.BookWorkbench.state?.project?.summary?.slug === 'black-rain-after' && document.querySelector('#chapterRows')?.textContent.includes('第 5 章')")
+                page.locator("#chapterRows tr").filter(has_text="第 5 章").click()
                 expect(page.locator("#chapterSelect")).to_contain_text("第五章", timeout=5000)
                 before_fixture = (workspace / "black-rain-after" / "chapters" / "ch05.md").read_text(encoding="utf-8")
                 page.evaluate("""
@@ -280,7 +280,7 @@ def main() -> int:
                 expect(page.locator("#annotationSelectedInput")).to_have_value("我的心里很复杂，我想起了过去的种种，内心充满了矛盾和挣扎。")
                 page.get_by_test_id("annotation-body-input").fill("这里太像 AI 了，不要解释内心，用动作表现。")
                 page.locator("#submitAnnotationBtn").click()
-                expect(page.locator("#annotationPanel").get_by_text("AN-1000")).to_be_visible(timeout=5000)
+                expect(page.locator("#annotationPanel").get_by_text("批注 1000")).to_be_visible(timeout=5000)
                 assert (workspace / "black-rain-after" / "chapters" / "ch05.md").read_text(encoding="utf-8") == before_fixture
                 page.locator("#reviseCurrentBtn").click()
                 expect(page.locator("#view-diff")).to_be_visible(timeout=5000)

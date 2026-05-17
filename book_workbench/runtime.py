@@ -194,8 +194,8 @@ class RuntimeOrchestrator:
         if isinstance(patch, dict):
             sources = [str(item) for item in patch.get("sourceAnnotations", []) if isinstance(item, str)]
             rules = [str(item) for item in patch.get("rulesUsed", []) if isinstance(item, str)]
-        summary = f"Apply safe manuscript patch {patch_id}"
-        body = "Runtime accepted a validated PatchProposal and applied it through the patch engine."
+        summary = f"安全应用书稿修改 {patch_id}"
+        body = "本地运行时已校验修改建议，并通过安全应用流程写入书稿。"
         return (
             f"{summary}\n\n"
             f"{body}\n\n"

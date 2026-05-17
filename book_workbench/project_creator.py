@@ -128,7 +128,7 @@ def build_project_plan(
         {
             "path": "book.spec.md",
             "content": (
-                f"# 《{title}》Book SPEC\n\n"
+                f"# 《{title}》书稿设定\n\n"
                 f"## 类型\n{genre}\n\n"
                 f"## 核心命题\n{premise}\n\n"
                 f"## 风格\n{style}\n"
@@ -140,7 +140,7 @@ def build_project_plan(
         },
         {
             "path": "style-guide.md",
-            "content": f"# Style Guide\n\n- {style}\n- 避免空泛总结心理。\n- 保持章节动作线清楚。\n",
+            "content": f"# 风格指南\n\n- {style}\n- 避免空泛总结心理。\n- 保持章节动作线清楚。\n",
         },
         {
             "path": "rules.yaml",
@@ -181,7 +181,7 @@ def build_project_plan(
         "slug": project_slug,
         "title": title,
         "files": files,
-        "summary": f"Create a new BookWorkbench project for 《{title}》.",
+        "summary": f"创建《{title}》本地书稿项目。",
     }
 
 
