@@ -194,9 +194,26 @@ def main() -> int:
                 page.locator('[data-view="editor"]').click()
                 expect(page.locator("#docView")).to_contain_text(opening, timeout=5000)
                 before_annotation = (user_project / "chapters" / "ch01.md").read_text(encoding="utf-8")
-                page.locator('.paragraph[data-block="ch01-p001"] .add-annotation-btn').click()
+                page.evaluate("""
+                () => {
+                    const el = document.querySelector('.paragraph[data-block="ch01-p001"] .ptext');
+                    const text = el.firstChild;
+                    const start = text.textContent.indexOf('心里很乱');
+                    const end = start + '心里很乱，想起过去很多事情。'.length;
+                    const range = document.createRange();
+                    range.setStart(text, start);
+                    range.setEnd(text, end);
+                    const selection = window.getSelection();
+                    selection.removeAllRanges();
+                    selection.addRange(range);
+                }
+                """)
+                page.locator('.paragraph[data-block="ch01-p001"] .ptext').click(button="right")
+                expect(page.locator("#selectionMenu")).to_be_visible(timeout=5000)
+                expect(page.locator("#selectionPreview")).to_contain_text("心里很乱，想起过去很多事情。", timeout=5000)
+                page.locator("#selectionAddAnnotationBtn").click()
                 expect(page.get_by_test_id("annotation-modal")).to_be_visible()
-                page.locator("#annotationSelectedInput").fill("心里很乱，想起过去很多事情。")
+                expect(page.locator("#annotationSelectedInput")).to_have_value("心里很乱，想起过去很多事情。")
                 page.locator("#annotationBodyInput").fill("这里太像 AI 了，不要解释内心，用动作表现。")
                 page.locator("#submitAnnotationBtn").click()
                 expect(page.locator("#annotationPanel").get_by_text("AN-001")).to_be_visible(timeout=5000)
@@ -229,9 +246,25 @@ def main() -> int:
                 page.locator("#chapterRows").get_by_text("chapters/ch05.md").click()
                 expect(page.locator("#chapterSelect")).to_contain_text("第五章", timeout=5000)
                 before_fixture = (workspace / "black-rain-after" / "chapters" / "ch05.md").read_text(encoding="utf-8")
-                page.locator('.paragraph[data-block="ch05-p018"] .add-annotation-btn').click()
-                expect(page.get_by_test_id("annotation-modal")).to_be_visible()
-                page.locator("#annotationSelectedInput").fill("我的心里很复杂，我想起了过去的种种，内心充满了矛盾和挣扎。")
+                page.evaluate("""
+                () => {
+                    const el = document.querySelector('.paragraph[data-block="ch05-p018"] .ptext');
+                    const text = el.firstChild;
+                    const selected = '我的心里很复杂，我想起了过去的种种，内心充满了矛盾和挣扎。';
+                    const start = text.textContent.indexOf(selected);
+                    const range = document.createRange();
+                    range.setStart(text, start);
+                    range.setEnd(text, start + selected.length);
+                    const selection = window.getSelection();
+                    selection.removeAllRanges();
+                    selection.addRange(range);
+                }
+                """)
+                page.evaluate("() => window.BookWorkbench.updateSelectionMenu()")
+                expect(page.locator("#selectionMenu")).to_be_visible(timeout=5000)
+                page.locator('.paragraph[data-block="ch05-p018"] .ptext').dblclick()
+                expect(page.get_by_test_id("annotation-modal")).to_be_visible(timeout=5000)
+                expect(page.locator("#annotationSelectedInput")).to_have_value("我的心里很复杂，我想起了过去的种种，内心充满了矛盾和挣扎。")
                 page.locator("#annotationBodyInput").fill("这里太像 AI 了，不要解释内心，用动作表现。")
                 page.locator("#submitAnnotationBtn").click()
                 expect(page.locator("#annotationPanel").get_by_text("AN-1000")).to_be_visible(timeout=5000)
