@@ -83,8 +83,9 @@ class ProjectCreatorTests(unittest.TestCase):
             self.assertTrue((project / "theory" / "core_definitions.md").exists())
             self.assertTrue((project / "claims" / "claim_register.yaml").exists())
             self.assertTrue((project / ".bookai" / "powerbook-guide.json").exists())
-            self.assertGreater(chapter.count("mw:block"), 7)
-            self.assertGreater(len(chapter), 1500)
+            self.assertGreaterEqual(chapter.count("mw:block"), 20)
+            self.assertGreaterEqual(chapter.count("\n## "), 5)
+            self.assertGreaterEqual(len(chapter), 7000)
             self.assertIn("权力，是稳定改写他人行动空间的能力", chapter)
 
 

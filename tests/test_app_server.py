@@ -300,11 +300,12 @@ class WorkspaceModeAppServerTests(unittest.TestCase):
     def test_index_contains_powerbook_workflow_controls_and_evidence_labels(self) -> None:
         html = self.get("/")
 
-        self.assertIn("用 Gemini 润色本章", html)
-        self.assertIn("生成整章修订建议", html)
+        self.assertIn("Gemini 直连润色", html)
+        self.assertIn("Codex 分段修订本章", html)
+        self.assertIn("失败诊断", html)
         self.assertIn('data-testid="powerbook-chapter-select"', html)
         self.assertIn('data-testid="powerbook-codex-button"', html)
-        self.assertIn("不会生成可提交的模板正文", html)
+        self.assertIn("不生成可提交模板正文", html)
         self.assertIn("工作流证据", html)
         self.assertIn("实际调用 Gemini", html)
         self.assertIn("工作流", html)
@@ -360,10 +361,11 @@ class WorkspaceModeAppServerTests(unittest.TestCase):
         self.assertTrue((project_root / ".bookai" / "powerbook-guide.json").exists())
         self.assertIn("PowerBookGuide", opened["project"]["powerbookWorkflow"]["source"])
         self.assertEqual(opened["project"]["powerbookWorkflow"]["chapterTarget"], "chapters/ch01.md")
-        self.assertGreater(chapter["wordCount"], 1200)
-        self.assertGreaterEqual(len(chapter["blocks"]), 8)
+        self.assertGreaterEqual(chapter["wordCount"], 6000)
+        self.assertGreaterEqual(len(chapter["blocks"]), 20)
         chapter_text = (project_root / "chapters" / "ch01.md").read_text(encoding="utf-8")
         self.assertIn("# 第一章 权力是什么", chapter_text)
+        self.assertGreaterEqual(chapter_text.count("\n## "), 5)
         self.assertIn("权力，是稳定改写他人行动空间的能力", chapter_text)
         self.assertNotIn("工作流说明", chapter["blocks"]["ch01-p001"]["text"])
 
@@ -680,6 +682,81 @@ class AppServerTests(unittest.TestCase):
                 self.assertIn("scripts/polish_chapters_gemini.py", server.app.codex_client.patch_probe_calls[-1]["prompt"])
                 self.assertTrue(preview["validation"]["valid"], preview)
                 self.assertEqual((project / "chapters" / "ch01_power.md").read_text(encoding="utf-8"), before_text)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+    def test_powerbook_large_chapter_uses_chunked_codex_and_merges_patch(self) -> None:
+        class ChunkCodex(FakeCodexClient):
+            def run_patch_proposal_turn(self, **kwargs):  # noqa: ANN003
+                self.patch_probe_calls.append(kwargs)
+                prompt = kwargs.get("prompt", "")
+                context_json = prompt.split("Context JSON:", 1)[1]
+                payload = json.loads(context_json)
+                allowed = payload["chapter"]["allowedBlocks"][0]
+                block_id = allowed["blockId"]
+                before_hash = allowed["beforeHash"]
+                proposal = {
+                    "id": f"PP-chunk-{block_id}",
+                    "summary": "chunked PowerBook proposal",
+                    "sourceAnnotations": ["USER-powerbook-gemini-workflow"],
+                    "rulesUsed": ["PB-001"],
+                    "changes": [
+                        {
+                            "file": "chapters/ch01_power.md",
+                            "targetBlockId": block_id,
+                            "operation": "replace_block",
+                            "beforeHash": before_hash,
+                            "afterText": f"## 分段修订 {block_id}\n\n这一段把抽象判断落回普通人的行动空间，说明选择如何被成本、风险和组织规则重新安排。",
+                            "reason": "fake chunked PowerBook workflow proposal",
+                        }
+                    ],
+                    "workflow": {"chunked": True, "model": "gemini-3.1-pro-preview"},
+                }
+                validation = kwargs["patch_validator"](proposal)
+                return {"ok": validation["valid"], "threadId": "thread-chunk", "turnId": f"turn-{block_id}", "patchProposal": proposal, "patchValidation": validation, "notifications": []}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = write_minimal_powerbook(Path(tmp) / "PowerBook")
+            chapter = source / "book" / "chapters" / "ch01_power.md"
+            chapter.write_text(
+                "---\nchapter: 1\ntitle: \"权力是什么\"\nreview_status: \"annotated\"\n---\n\n# 第一章 权力是什么\n\n"
+                + "\n\n".join(f"## 第 {idx} 节\n\n第 {idx} 段正文，讨论行动空间如何被稳定改写。" for idx in range(1, 31)),
+                encoding="utf-8",
+            )
+            workspace = Path(tmp) / "workspace"
+            project = Path(import_powerbook_project(source, workspace, slug="powerbook-test")["root"])
+            server = create_server(
+                project,
+                workspace_root=workspace,
+                builtin_skills_root=SKILLS,
+                port=0,
+                codex_client=ChunkCodex(),
+                local_token="test-token",
+                quiet=True,
+            )
+            host, port = server.server_address[:2]
+            base_url = f"http://{host}:{port}"
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                result = post_json(
+                    base_url,
+                    "/api/workflows/powerbook/gemini-chapter",
+                    {"file": "chapters/ch01_power.md", "timeoutSeconds": 1, "chunked": True},
+                )
+                preview = post_json(base_url, "/api/patch/preview", {"patch": result["output"]})
+
+                self.assertEqual(result["source"], "codex-app-server")
+                self.assertTrue(result["workflow"]["chunked"])
+                self.assertGreater(result["workflow"]["chunkCount"], 1)
+                self.assertEqual(result["workflow"]["successfulChunkCount"], result["workflow"]["chunkCount"])
+                self.assertGreater(len(result["output"]["changes"]), 1)
+                self.assertEqual(result["output"]["workflow"]["source"], "codex-app-server")
+                self.assertTrue(preview["validation"]["valid"], preview)
+                self.assertIn("trusted-powerbook-gemini-chapter", server.app.codex_client.patch_probe_calls[0]["prompt"])
+                self.assertIn("chunked", json.dumps(result["workflow"], ensure_ascii=False))
             finally:
                 server.shutdown()
                 server.server_close()

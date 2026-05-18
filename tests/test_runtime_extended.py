@@ -192,6 +192,46 @@ class ExtendedRuntimeTests(unittest.TestCase):
             self.assertTrue(any(issue.code == "reviewed_chapter_requires_secondary_approval" for issue in rejected.issues))
             self.assertTrue(accepted.valid, accepted.error_messages())
 
+    def test_low_quality_powerbook_template_patch_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "powerbook-quality"
+            (project / "chapters").mkdir(parents=True)
+            (project / ".bookai").mkdir()
+            (project / "rules.yaml").write_text("rules:\n", encoding="utf-8")
+            (project / "book.spec.md").write_text("# 测试书稿\n", encoding="utf-8")
+            (project / "style-guide.md").write_text("# 风格\n", encoding="utf-8")
+            blocks = []
+            for idx in range(1, 16):
+                text = "这一段是较长的 PowerBook 正文，用来模拟真实大章节中的论证密度和行动空间分析。" * 18
+                blocks.append(f"<!-- mw:block id=ch01-p{idx:03d} hash=sha256:h{idx:03d} -->\n{text}")
+            (project / "chapters" / "ch01.md").write_text("# 第一章\n\n" + "\n\n".join(blocks) + "\n", encoding="utf-8")
+            (project / ".bookai" / "chapter-status.yaml").write_text("chapters:\n  chapters/ch01.md:\n    status: draft\n", encoding="utf-8")
+            (project / ".bookai" / "annotations.jsonl").write_text("", encoding="utf-8")
+            context = load_project(project)
+            first = next(iter(context.blocks["chapters/ch01.md"].values()))
+            patch = {
+                "id": "PP-powerbook-template",
+                "summary": "bad template",
+                "sourceAnnotations": ["USER-powerbook-gemini-workflow"],
+                "rulesUsed": [],
+                "workflow": {"kind": "trusted-powerbook-gemini-chapter"},
+                "changes": [
+                    {
+                        "file": "chapters/ch01.md",
+                        "targetBlockId": first.id,
+                        "operation": "replace_block",
+                        "beforeHash": first.before_hash,
+                        "afterText": "这一段需要先落到可见处境，再回到权力定义。",
+                        "reason": "template fallback must be rejected",
+                    }
+                ],
+            }
+
+            result = validate_patch(context, patch)
+
+            self.assertFalse(result.valid)
+            self.assertTrue(any(issue.code == "low_quality_whole_chapter_patch" for issue in result.issues), result.issues)
+
     def test_anchor_in_after_text_rejected(self) -> None:
         context = load_project(SAMPLE)
         patch = make_annotation_patch(context, "AN-041")

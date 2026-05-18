@@ -50,22 +50,27 @@ class FakeCodexClient:
         self.patch_calls += 1
         prompt = kwargs.get("prompt", "")
         if "trusted-powerbook-gemini-chapter" in prompt:
+            context_json = prompt.split("Context JSON:", 1)[1]
+            payload = json.loads(context_json)
+            allowed = payload["chapter"]["allowedBlocks"][0]
+            block_id = allowed["blockId"]
+            before_hash = allowed["beforeHash"]
             proposal = {
-                "id": "PP-e2e-powerbook-workflow",
-                "summary": "browser e2e PowerBook trusted workflow",
+                "id": f"PP-e2e-powerbook-workflow-{block_id}",
+                "summary": "browser e2e PowerBook trusted workflow chunk",
                 "sourceAnnotations": ["USER-powerbook-gemini-workflow"],
                 "rulesUsed": ["PB-001"],
                 "changes": [
                     {
                         "file": "chapters/ch01_power.md",
-                        "targetBlockId": "ch01-p001",
+                        "targetBlockId": block_id,
                         "operation": "replace_block",
-                        "beforeHash": "sha256:6db580",
+                        "beforeHash": before_hash,
                         "afterText": "第一段正文，先把抽象术语放回普通人能看见的处境里。\n\n换句话说，权力不是一个远处的名词，而是会改变普通人下一步动作的稳定价格表。",
-                        "reason": "fake PowerBook workflow proposal for browser e2e",
+                        "reason": "fake PowerBook chunked workflow proposal for browser e2e",
                     }
                 ],
-                "workflow": {"model": "gemini-3.1-pro-preview", "scriptPath": "scripts/polish_chapters_gemini.py", "geminiRequested": True, "geminiInvoked": False},
+                "workflow": {"chunked": True, "model": "gemini-3.1-pro-preview", "scriptPath": "scripts/polish_chapters_gemini.py", "geminiRequested": True, "geminiInvoked": False},
             }
         elif "AN-001" in prompt:
             proposal = {
@@ -360,7 +365,8 @@ def main() -> int:
                 page.get_by_test_id("powerbook-codex-button").click()
                 expect(page.locator("#view-diff")).to_be_visible(timeout=5000)
                 expect(page.locator("#patchValidity")).to_contain_text("通过", timeout=5000)
-                page.wait_for_function("() => window.BookWorkbench.state?.lastPatch?.id === 'PP-e2e-powerbook-workflow'")
+                page.wait_for_function("() => window.BookWorkbench.state?.lastPatch?.workflow?.chunked === true")
+                page.wait_for_function("() => window.BookWorkbench.state?.lastPatch?.workflow?.source === 'codex-app-server'")
                 assert len(workflow_requests) > requests_before_workflow, "PowerBook workflow button must call /api/workflows/powerbook/gemini-chapter"
                 expect(page.locator("#workflowEvidence")).to_contain_text("gemini-3.1-pro-preview", timeout=5000)
                 expect(page.locator("#workflowEvidence")).to_contain_text("scripts/polish_chapters_gemini.py", timeout=5000)

@@ -37,7 +37,10 @@ from .project import (
 from .project_creator import ProjectCreationError, create_book_project, create_project_baseline_commit
 from .powerbook_workflow import (
     build_powerbook_local_chapter_patch,
+    build_powerbook_gemini_chunk_prompts,
     build_powerbook_gemini_chapter_prompt,
+    merge_powerbook_chunk_patches,
+    powerbook_chapter_needs_chunking,
     powerbook_workflow_available,
     powerbook_workflow_metadata,
     run_powerbook_gemini_direct,
@@ -428,7 +431,8 @@ INDEX_HTML = """<!doctype html>
     function setProjectNavEnabled(enabled) { document.querySelectorAll("[data-project-only]").forEach((button) => { button.disabled = !enabled; }); }
     function setView(view) { if (view !== "dashboard" && view !== "settings" && !hasProject()) { toast("请先新建或打开一个项目。"); view = "dashboard"; } if (view === "editor" && hasProject() && !state.currentChapter) { const first = firstChapterFile(); if (first) loadChapter(first).catch(showError); } state.activeView = view; document.querySelectorAll(".view").forEach((el) => el.classList.add("hidden")); const target = $(`view-${view}`); if (target) target.classList.remove("hidden"); document.querySelectorAll(".nav button").forEach((btn) => btn.classList.toggle("active", btn.dataset.view === view)); const titles = { dashboard: hasProject() ? [bookTitle(), "项目总览 · 点击章节进入文稿"] : ["项目", "还没有打开书稿。请从项目列表进入，或新建一个项目。"], editor: ["文稿编辑", `项目 / ${bookTitle()} / 文稿`], annotations: ["批注中心", "集中处理开放批注与智能建议"], discussions: ["项目讨论", "讨论写作意图，不直接改正文"], diff: ["修改差异审核", "所有修改先预览，再由运行时安全应用"], rules: ["规则中心", "规则只传播到草稿 / 未审阅，已锁定章节永不修改"], export: ["导出项目", "本地书稿项目结构可直接复制或进入导出适配器"], settings: ["设置 / 安全中心", "安全边界、智能服务连接与审计策略"] }; const [title, subtitle] = titles[view] || titles.dashboard; $("pageTitle").textContent = title; $("pageSubtitle").textContent = subtitle; if (view === "dashboard") renderDashboard(); if (view === "rules") renderRules(); if (view === "annotations") renderAnnotations(); if (view === "discussions") { renderDiscussions(); loadSidecars().catch(showError); } if (view === "diff") renderDiffIfReady(); }
     function codexStatusLabel(codex) { if (codex?.ok) return "已连接"; if (codex?.error) return `连接失败：${codex.error}`; const labels = { pending_project_open: "打开项目后检测", no_project_open: "打开项目后检测", unavailable: "未连接", timeout: "连接超时" }; return labels[codex?.status] || "未连接"; }
-    async function loadHealth() { const health = await api("/api/health"); const codexOk = !!health.codex?.ok; const runtimeOk = !!health.runtime?.ok; const codexLabel = codexStatusLabel(health.codex); $("settingsCodex").textContent = codexLabel; $("settingsCodex").title = codexLabel; $("settingsCodex").className = `status-badge ${codexOk ? "" : "neutral"}`; if (hasProject()) $("pageSubtitle").innerHTML = `运行时 <span class="${runtimeOk ? "ok" : "bad"}">${runtimeOk ? "已连接" : "未打开项目"}</span> · 智能服务 <span class="${codexOk ? "ok" : "bad"}">${escapeHtml(codexLabel)}</span>`; return health; }
+    function codexTrustWarnings(codex) { const text = `${codex?.stderr || ""}\n${JSON.stringify(codex?.notifications || [])}`; const warnings = []; if (/project-local|local config|hooks|exec polic/i.test(text)) warnings.push("项目本地配置或钩子可能未完全启用"); if (/untrusted|trust/i.test(text)) warnings.push("当前智能服务未确认完整信任环境"); return [...new Set(warnings)]; }
+    async function loadHealth() { const health = await api("/api/health"); const codexOk = !!health.codex?.ok; const runtimeOk = !!health.runtime?.ok; const codexLabel = codexStatusLabel(health.codex); const trustWarnings = codexTrustWarnings(health.codex); const trustLabel = trustWarnings.length ? `；等价性提醒：${trustWarnings.join("；")}` : ""; $("settingsCodex").textContent = codexLabel; $("settingsCodex").title = codexLabel + trustLabel; $("settingsCodex").className = `status-badge ${codexOk && !trustWarnings.length ? "" : "neutral"}`; if (hasProject()) $("pageSubtitle").innerHTML = `运行时 <span class="${runtimeOk ? "ok" : "bad"}">${runtimeOk ? "已连接" : "未打开项目"}</span> · 智能服务 <span class="${codexOk ? "ok" : "bad"}">${escapeHtml(codexLabel)}</span>${trustWarnings.length ? ` · <span class="bad">项目等价性提醒</span>` : ""}`; return health; }
     async function loadWorkspace() { const [workspace, projects, project] = await Promise.all([api("/api/workspace"), api("/api/projects"), maybeApi("/api/project")]); state.workspace = workspace; state.projects = projects.projects || []; if (project && project.open !== false) state.project = project; $("settingsWorkspace").textContent = workspace.root ? "本地工作区" : "—"; $("settingsWorkspace").title = workspace.root || ""; $("workspaceShort").textContent = "本地"; $("workspaceBar").style.width = `${Math.min(100, state.projects.length * 12)}%`; renderShell(); if (hasProject()) await loadProjectDetails(false); else renderDashboard(); }
     async function refreshProjects() { const payload = await api("/api/projects"); state.projects = payload.projects || []; renderDashboard(); return state.projects; }
     async function openProject(relativePath, options = {}) { const payload = await api("/api/projects/open", { method: "POST", body: JSON.stringify({ relativePath }) }); state.project = payload.project; state.annotations = payload.project.annotations || []; state.discussions = []; state.audit = []; renderShell(); state.currentFile = null; state.currentChapter = null; state.lastPatch = null; state.lastPreview = null; state.lastWorkflow = null; state.workflowSelectedFile = null; state.workflowStatus = null; setView("dashboard"); const sidecars = loadSidecars().catch(showError); if (options.awaitSidecars) await sidecars; loadHealth().catch(() => {}); if (!options.quiet) toast(`已打开：${bookTitle()}`); return state.project; }
@@ -438,7 +442,7 @@ INDEX_HTML = """<!doctype html>
     function renderShell() { setProjectNavEnabled(hasProject()); $("sideBookTitle").textContent = hasProject() ? bookTitle() : "未打开项目"; $("sideBookMeta").textContent = hasProject() ? `${Object.keys(state.project.blocks || {}).length} 章 · ${state.annotations.length} 条批注 · ${state.discussions.length} 条讨论` : "请选择或新建书稿项目"; }
     function renderDashboard() { const main = $("dashboardMain"); const side = $("dashboardSide"); if (!hasProject()) { const hasProjects = state.projects.length > 0; main.innerHTML = hasProjects ? `<section class="card panel" data-testid="project-list-panel"><div class="panel-title"><div><h2>项目列表</h2><p class="muted">请选择一个已有书稿项目，或新建自己的项目。</p></div><div class="button-row"><button class="ghost-btn" id="refreshProjectListBtn">刷新</button><button class="primary-btn" id="workspaceNewProjectBtn" data-testid="open-new-project-modal">新建项目</button></div></div><div class="project-grid">${state.projects.map(projectCardHtml).join("")}</div></section>` : `<section class="card empty-state" data-testid="empty-workspace"><div><div class="empty-icon">＋</div><h2>还没有书稿项目</h2><p>书稿工作台不会预置任何小说。请新建你自己的项目，或打开工作区中已有的本地书稿项目。</p><button class="primary-btn" id="emptyNewProjectBtn" data-testid="open-new-project-modal">新建项目</button></div></section>`; side.innerHTML = `<section class="card panel"><div class="panel-title"><h3>安全底座</h3></div><div class="check-list"><div class="check-row"><span>▣</span><span>智能输出必须是修改建议</span>${statusBadge("开启")}</div><div class="check-row"><span>🔒</span><span>已锁定章节禁止修改</span>${statusBadge("开启")}</div><div class="check-row"><span>⌘</span><span>接受修改后创建版本记录</span>${statusBadge("开启")}</div></div></section>`; bindProjectListEvents(); $("emptyNewProjectBtn")?.addEventListener("click", openProjectModal); $("workspaceNewProjectBtn")?.addEventListener("click", openProjectModal); return; }
       const files = Object.keys(state.project.blocks || {}).sort(); const summaries = state.project.chapterSummaries || {}; const statuses = state.project.chapterStatus || {}; const open = state.annotations.filter((a) => a.status === "open").length; const locked = Object.values(statuses).filter((s) => s === "locked").length; const rules = state.project.rules || []; const stats = [["📖", "章节", files.length, "真实文件", "purple"], ["字", "总字数", formatNumber(totalWordCount()), "自动统计", "green"], ["🔒", "已锁定", locked, "自动拒绝", "blue"], ["☵", "待处理批注", open, "独立记录", "orange"], ["✦", "活跃规则", rules.length, "先审后改", "purple"], ["✎", "讨论", state.discussions.length, "独立记录", "blue"]]; main.innerHTML = `<div class="stats">${stats.map(([icon, label, num, note, color]) => `<div class="card metric"><div class="metric-icon ${color}">${icon}</div><div class="metric-body"><span class="label">${label}</span><strong class="num">${num}</strong><span class="note muted">${note}</span></div></div>`).join("")}</div><section class="card panel"><div class="panel-title"><h2>章节列表</h2><button class="ghost-btn" id="refreshProjectBtn">刷新</button></div><div class="table-scroll"><table class="chapter-table"><thead><tr><th>章节</th><th>状态</th><th>块数</th><th>字数</th><th></th></tr></thead><tbody id="chapterRows">${files.map((file, idx) => { const summary = summaries[file] || {}; const blocks = state.project.blocks[file] || []; const title = summary.title || titleFromPath(file); const status = summary.status || statuses[file] || "draft"; const words = summary.wordCount ?? wordCount(Object.values(blocks).map((b) => b.text || "").join("\\n")); return `<tr data-file="${escapeHtml(file)}" title="打开章节"><td><strong>${idx + 1}. ${escapeHtml(title)}</strong><br><span class="muted">本地章节文件</span></td><td><span class="status-pill ${statusClass(status)}">${statusLabel(status)}</span></td><td>${summary.blockCount || blocks.length}</td><td class="chapter-words">${formatNumber(words)}</td><td><span class="muted">打开</span></td></tr>`; }).join("")}</tbody></table></div></section>`; const workflow = powerbookWorkflowHtml(); side.innerHTML = `<section class="card panel"><div class="panel-title"><h3>快捷操作</h3></div><div class="button-row single"><button class="primary-btn" id="newProjectBtn">⊕ 新建项目</button><button class="ghost-btn" id="openEditorBtn">▤ 打开文稿</button><button class="ghost-btn" id="newAnnotationBtn">☵ 处理批注</button><button class="ghost-btn" id="newDiscussionBtn">✎ 新建讨论</button></div></section>${workflow}<section class="card panel"><div class="panel-title"><h3>项目列表</h3><button class="link-btn" id="refreshProjectListBtn">刷新</button></div><div class="project-grid" style="grid-template-columns:1fr">${state.projects.map(projectCardHtml).join("")}</div></section><section class="card panel"><div class="panel-title"><h3>智能建议</h3></div><div id="aiSuggestions">${open ? `有 ${open} 条批注可处理。` : "当前没有待处理批注。"}</div></section><section class="card panel"><div class="panel-title"><h3>项目健康度</h3></div><div class="check-list"><div class="check-row"><span>▣</span><span>运行时</span>${statusBadge("正常")}</div><div class="check-row"><span>⌘</span><span>版本记录</span>${statusBadge("接受修改时创建")}</div></div></section>`; document.querySelectorAll("#chapterRows tr").forEach((tr) => tr.addEventListener("click", () => loadChapter(tr.dataset.file).then(() => setView("editor")).catch(showError))); $("refreshProjectBtn")?.addEventListener("click", () => loadProjectDetails(false).catch(showError)); $("newProjectBtn")?.addEventListener("click", openProjectModal); $("openEditorBtn")?.addEventListener("click", () => { const first = firstChapterFile(); if (first) loadChapter(first).then(() => setView("editor")).catch(showError); }); $("newAnnotationBtn")?.addEventListener("click", () => setView("annotations")); $("newDiscussionBtn")?.addEventListener("click", () => setView("discussions")); $("powerbookChapterSelect")?.addEventListener("change", (event) => { state.workflowSelectedFile = event.target.value; renderDashboard(); }); $("powerbookGeminiBtn")?.addEventListener("click", () => runPowerBookGeminiChapter({ directGemini: true }).catch(showError)); $("powerbookCodexBtn")?.addEventListener("click", () => runPowerBookGeminiChapter({ directGemini: false }).catch(showError)); bindProjectListEvents(); }
-    function powerbookWorkflowHtml() { const workflow = state.project?.powerbookWorkflow; if (!workflow) return ""; const target = workflowTargetFile(); const files = Object.keys(state.project?.blocks || {}).sort(); const options = files.map((file) => `<option value="${escapeHtml(file)}" ${file === target ? "selected" : ""}>${escapeHtml(fileDisplayLabel(file))}</option>`).join(""); const counts = workflow.statusCounts || {}; const countHtml = Object.entries(counts).length ? Object.entries(counts).map(([key, value]) => `<div class="check-row"><span>•</span><span>${escapeHtml(statusLabel(key))}</span><strong>${escapeHtml(value)}</strong></div>`).join("") : `<div class="check-row"><span>•</span><span>工作流状态</span><strong>已启用</strong></div>`; const artifacts = workflow.artifacts || []; const artifactHtml = artifacts.length ? artifacts.map((item) => `<div class="check-row"><span>📎</span><span>${escapeHtml(item.label)}<br><span class="muted">已放入项目资料</span></span><strong>已导入</strong></div>`).join("") : `<div class="check-row"><span>📎</span><span>审阅资料</span><strong>暂无</strong></div>`; const runningText = state.workflowRunning ? `<div class="check-row"><span>⏳</span><span>当前阶段</span><strong>${escapeHtml(state.workflowStatus || "正在生成修改建议")}</strong></div>` : `<div class="check-row"><span>✓</span><span>当前阶段</span><strong>空闲，等待选择章节</strong></div>`; const sourceName = workflow.source === "PowerBookGuide" ? "写书引导" : "导入工作流"; return `<section class="card panel" data-testid="powerbook-workflow-card"><div class="panel-title"><h3>${sourceName}</h3></div><label class="field" for="powerbookChapterSelect">目标章节<select id="powerbookChapterSelect" aria-label="PowerBook 目标章节" data-testid="powerbook-chapter-select" ${state.workflowRunning ? "disabled" : ""}>${options}</select></label><div class="check-list">${runningText}${countHtml}</div><div class="button-row single mt"><button class="primary-btn" id="powerbookGeminiBtn" data-testid="powerbook-gemini-button" ${state.workflowRunning ? "disabled" : ""}>用 Gemini 润色本章</button><button class="ghost-btn" id="powerbookCodexBtn" data-testid="powerbook-codex-button" ${state.workflowRunning ? "disabled" : ""}>生成整章修订建议</button></div><p class="muted">这是受信任入口：只生成修改建议，接受前不会写正文。若 Gemini 或 Codex 超时，只显示诊断和失败原因，不会生成可提交的模板正文。</p><h3 class="mt">审阅资料</h3><div class="check-list">${artifactHtml}</div></section>`; }
+    function powerbookWorkflowHtml() { const workflow = state.project?.powerbookWorkflow; if (!workflow) return ""; const target = workflowTargetFile(); const files = Object.keys(state.project?.blocks || {}).sort(); const options = files.map((file) => `<option value="${escapeHtml(file)}" ${file === target ? "selected" : ""}>${escapeHtml(fileDisplayLabel(file))}</option>`).join(""); const counts = workflow.statusCounts || {}; const countHtml = Object.entries(counts).length ? Object.entries(counts).map(([key, value]) => `<div class="check-row"><span>•</span><span>${escapeHtml(statusLabel(key))}</span><strong>${escapeHtml(value)}</strong></div>`).join("") : `<div class="check-row"><span>•</span><span>工作流状态</span><strong>已启用</strong></div>`; const artifacts = workflow.artifacts || []; const artifactHtml = artifacts.length ? artifacts.map((item) => `<div class="check-row"><span>📎</span><span>${escapeHtml(item.label)}<br><span class="muted">已放入项目资料</span></span><strong>已导入</strong></div>`).join("") : `<div class="check-row"><span>📎</span><span>审阅资料</span><strong>暂无</strong></div>`; const runningText = state.workflowRunning ? `<div class="check-row"><span>⏳</span><span>当前阶段</span><strong>${escapeHtml(state.workflowStatus || "正在生成修改建议")}</strong></div>` : `<div class="check-row"><span>✓</span><span>当前阶段</span><strong>空闲，等待选择章节</strong></div>`; const sourceName = workflow.source === "PowerBookGuide" ? "写书引导" : "导入工作流"; return `<section class="card panel" data-testid="powerbook-workflow-card"><div class="panel-title"><h3>${sourceName}</h3></div><label class="field" for="powerbookChapterSelect">目标章节<select id="powerbookChapterSelect" aria-label="PowerBook 目标章节" data-testid="powerbook-chapter-select" ${state.workflowRunning ? "disabled" : ""}>${options}</select></label><div class="check-list">${runningText}${countHtml}</div><div class="button-row single mt"><button class="primary-btn" id="powerbookGeminiBtn" data-testid="powerbook-gemini-button" ${state.workflowRunning ? "disabled" : ""}>Gemini 直连润色</button><button class="ghost-btn" id="powerbookCodexBtn" data-testid="powerbook-codex-button" ${state.workflowRunning ? "disabled" : ""}>Codex 分段修订本章</button></div><p class="muted">两条路径会明确记录来源：Gemini 直连、Codex 分段、失败诊断。本入口只生成修改建议，接受前不会写正文；超时或低质量结果只显示诊断，不生成可提交模板正文。</p><h3 class="mt">审阅资料</h3><div class="check-list">${artifactHtml}</div></section>`; }
     function projectCardHtml(project) { return `<button class="project-card" data-project="${escapeHtml(project.relativePath)}" data-testid="project-card" title="打开项目"><span class="tag">本地项目</span><strong>${escapeHtml(project.title || "未命名作品")}</strong><div class="meta">${project.chapterCount || 0} 章 · ${project.annotationCount || 0} 条批注<br>点击打开项目</div></button>`; }
     function bindProjectListEvents() { document.querySelectorAll("[data-project]").forEach((card) => card.addEventListener("click", () => openProject(card.dataset.project).catch(showError))); $("refreshProjectListBtn")?.addEventListener("click", () => refreshProjects().catch(showError)); }
     function renderEditor() { const chapter = state.currentChapter; if (!chapter) return; const blocks = chapter.blocks || {}; const ids = chapter.blockIds || Object.keys(blocks); const title = chapter.title || titleFromPath(chapter.file); const allText = Object.values(blocks).map((b) => b.text).join("\\n"); const words = wordCount(allText); $("chapterSelect").textContent = title; $("editorStatus").textContent = statusLabel(chapter.status); $("editorStatus").className = `status-pill ${statusClass(chapter.status)}`; $("editorWords").textContent = `字数：${words.toLocaleString()}`; $("chapterWordCount").textContent = `本章字数：${words.toLocaleString()}`; $("docView").innerHTML = `<h2>${escapeHtml(title)}</h2>` + ids.map((id) => { const block = blocks[id]; const annotation = blockAnnotation(id); return `<div class="paragraph ${annotation ? "annotated" : ""}" data-block="${escapeHtml(id)}"><div class="pid">${escapeHtml(blockDisplayLabel(id))}</div><div class="ptext" data-testid="block-text">${escapeHtml(block.text)}</div><div><button class="ghost-btn add-annotation-btn" data-block="${escapeHtml(id)}">添加批注</button>${annotation ? `<br><span class="tag">${escapeHtml(annotationDisplayId(annotation.id))}</span>` : ""}</div></div>`; }).join(""); document.querySelectorAll(".add-annotation-btn").forEach((btn) => btn.addEventListener("click", () => openAnnotationModal(btn.dataset.block))); renderAnnotationPanel(); renderDiffIfReady(); }
@@ -448,12 +452,12 @@ INDEX_HTML = """<!doctype html>
     function renderDiscussions() { const list = state.discussions || []; $("discussionCount").textContent = list.length; $("discussionList").innerHTML = list.length ? list.map((item) => `<div class="discussion-card" data-testid="discussion-card"><div class="annotation-head"><strong>讨论记录</strong><span>${escapeHtml(item.file ? fileDisplayLabel(item.file) : "项目")}${item.blockId ? " · " + escapeHtml(blockDisplayLabel(item.blockId)) : ""}</span></div><p>${escapeHtml(item.text)}</p></div>`).join("") : `<div class="empty-state" style="min-height:220px"><div><div class="empty-icon">✎</div><h2>暂无讨论</h2><p>先记录写作意图；后续改稿仍要先审核再写入。</p></div></div>`; }
     function renderRules() { if (!hasProject()) return; const rules = state.project?.rules || []; const filtered = rules.filter(ruleMatchesFilter); if (!state.selectedRuleId || !rules.find((rule) => rule.id === state.selectedRuleId)) state.selectedRuleId = filtered[0]?.id || rules[0]?.id || null; if (state.selectedRuleId && !filtered.find((rule) => rule.id === state.selectedRuleId)) state.selectedRuleId = filtered[0]?.id || null; $("ruleCount").textContent = rules.length; document.querySelectorAll("[data-rule-filter]").forEach((el) => el.classList.toggle("active", el.dataset.ruleFilter === state.ruleFilter)); const summary = state.ruleFilter === "all" ? `显示全部 ${rules.length} 条规则` : `显示 ${ruleTypeLabel(state.ruleFilter)}：${filtered.length} / ${rules.length} 条`; $("ruleFilterSummary").textContent = summary; $("ruleList").innerHTML = filtered.length ? filtered.map((rule) => `<button class="rule-row ${rule.id === state.selectedRuleId ? "active" : ""}" data-rule-id="${escapeHtml(rule.id)}"><div class="rule-meta"><span>${escapeHtml(ruleDisplayLabel(rule.id))} · ${escapeHtml(ruleTypeLabel(rule.type))}</span>${statusBadge("启用")}</div><strong>${escapeHtml(rule.text)}</strong><div class="rule-meta"><span>来源：${escapeHtml((rule.source_annotations || []).map(annotationDisplayId).join("、") || "用户规则")}</span><span class="tag">${escapeHtml((rule.apply_to || []).map(scopeLabel).join(" / ") || "全部")}</span></div></button>`).join("") : `<div class="empty-state" style="min-height:220px"><div><div class="empty-icon">▱</div><h2>没有匹配的规则</h2><p>当前筛选为 ${escapeHtml(ruleTypeLabel(state.ruleFilter))}，可切回“全部”。</p></div></div>`; document.querySelectorAll("[data-rule-id]").forEach((row) => row.addEventListener("click", () => { state.selectedRuleId = row.dataset.ruleId; renderRules(); })); const rule = rules.find((item) => item.id === state.selectedRuleId) || filtered[0]; $("ruleDetail").innerHTML = rule ? `<div><strong>${escapeHtml(ruleDisplayLabel(rule.id))}</strong> ${statusBadge("启用")}</div><h2>${escapeHtml(rule.text)}</h2><p class="muted">类型：${escapeHtml(ruleTypeLabel(rule.type))}</p><p class="muted">作用范围：${escapeHtml((rule.apply_to || []).map(scopeLabel).join(" / ") || "全部")}；排除：${escapeHtml((rule.exclude || []).map(scopeLabel).join(" / ") || "无")}</p>` : `<h2>选择一条规则</h2><p class="muted">规则传播必须先生成修改建议。</p>`; }
     async function runRevise() { const annotation = selectedAnnotation(); if (!annotation) throw new Error("当前章节没有待处理批注。请先添加批注，或重新定位已有批注。 "); const chapterBefore = state.currentFile ? await api("/api/chapters/" + encodeURIComponent(state.currentFile)) : null; toast("正在调用智能服务生成修改建议，超时后会安全回退到本地运行时。"); const result = await api("/api/ai/revise", { method: "POST", body: JSON.stringify({ annotationIds: [annotation.id], file: annotation.file, timeoutSeconds: 30 }) }); state.lastPatch = result.output; state.lastWorkflow = result.workflow || result.output?.workflow || null; if (chapterBefore && annotation.file === state.currentFile) state.currentChapter = chapterBefore; const sourceLabel = result.source === "codex-app-server" ? "智能服务已生成修改建议" : "智能服务不可用或未通过校验，已回退到本地安全建议"; toast(`${sourceLabel}，进入差异审核。`); await previewPatch(false); setView("diff"); return result; }
-    async function runPowerBookGeminiChapter(options = {}) { if (!state.project?.powerbookWorkflow) throw new Error("当前项目不是专用写作项目。"); const file = workflowTargetFile(); if (!file) throw new Error("当前项目没有可修订章节。"); const targetLabel = fileDisplayLabel(file); state.workflowSelectedFile = file; state.workflowRunning = true; state.workflowStatus = `读取章节：${targetLabel}`; renderDashboard(); const chapterBefore = await api("/api/chapters/" + encodeURIComponent(file)); state.currentFile = file; state.currentChapter = chapterBefore; state.workflowStatus = options.directGemini ? `正在调用 Gemini：${targetLabel}` : `正在调用 Codex 本地服务：${targetLabel}`; renderDashboard(); toast(options.directGemini ? `正在通过受信任入口尝试调用 Gemini：${targetLabel}` : `正在按工作流生成整章修改建议：${targetLabel}`); try { const result = await api("/api/workflows/powerbook/gemini-chapter", { method: "POST", body: JSON.stringify({ file, timeoutSeconds: 180, directGemini: !!options.directGemini, instruction: "按 PowerBook 原始 Codex/Gemini 流程修订当前章节；只输出 PatchProposal。" }) }); state.workflowStatus = "正在进行运行时校验"; renderDashboard(); state.lastPatch = result.output; state.lastWorkflow = result.workflow || result.output?.workflow || null; state.currentChapter = chapterBefore; const workflow = state.lastWorkflow || {}; if (workflow.diagnosticOnly || workflow.localFallback) { toast("外部模型未返回可用整章建议；已显示诊断，不能作为润色结果提交。"); } else { toast(workflow.geminiInvoked ? "已实际调用 Gemini，进入差异审核。" : "已生成整章修改建议，进入差异审核。"); } await previewPatch(false); setView("diff"); return result; } finally { state.workflowRunning = false; state.workflowStatus = null; renderDashboard(); } }
+    async function runPowerBookGeminiChapter(options = {}) { if (!state.project?.powerbookWorkflow) throw new Error("当前项目不是专用写作项目。"); const file = workflowTargetFile(); if (!file) throw new Error("当前项目没有可修订章节。"); const targetLabel = fileDisplayLabel(file); state.workflowSelectedFile = file; state.workflowRunning = true; state.workflowStatus = `读取章节：${targetLabel}`; renderDashboard(); const chapterBefore = await api("/api/chapters/" + encodeURIComponent(file)); state.currentFile = file; state.currentChapter = chapterBefore; state.workflowStatus = options.directGemini ? `正在调用 Gemini 直连：${targetLabel}` : `正在调用 Codex 分段修订：${targetLabel}`; renderDashboard(); toast(options.directGemini ? `正在通过受信任入口尝试 Gemini 直连：${targetLabel}` : `正在用 Codex 分段生成本章修改建议：${targetLabel}`); try { const result = await api("/api/workflows/powerbook/gemini-chapter", { method: "POST", body: JSON.stringify({ file, timeoutSeconds: 180, directGemini: !!options.directGemini, chunked: !options.directGemini, instruction: "按 PowerBook 原始 Codex/Gemini 流程修订当前章节；只输出可审核修改建议。" }) }); state.workflowStatus = "正在进行运行时校验"; renderDashboard(); state.lastPatch = result.output; state.lastWorkflow = result.workflow || result.output?.workflow || null; state.currentChapter = chapterBefore; const workflow = state.lastWorkflow || {}; if (workflow.diagnosticOnly || workflow.localFallback) { toast("外部模型未返回可用建议；已显示失败诊断，不能提交。"); } else if (workflow.chunked) { toast(`Codex 分段建议已生成：${workflow.successfulChunkCount || workflow.chunkCount || 0} 段可审核，进入差异审核。`); } else { toast(workflow.geminiInvoked ? "Gemini 直连已返回建议，进入差异审核。" : "Codex 已生成修改建议，进入差异审核。"); } await previewPatch(false); setView("diff"); return result; } finally { state.workflowRunning = false; state.workflowStatus = null; renderDashboard(); } }
     async function previewPatch(showToast = true) { if (!state.lastPatch) await runRevise(); state.lastPreview = await api("/api/patch/preview", { method: "POST", body: JSON.stringify({ patch: state.lastPatch }) }); renderDiffIfReady(); if (showToast) toast("差异预览已生成。 "); return state.lastPreview; }
     async function applyPatch() { if (!state.lastPatch) await runRevise(); if (state.lastPreview && state.lastPreview.validation && state.lastPreview.validation.valid === false) { toast("当前建议未通过校验，不能提交。请重新定位批注或重新生成建议。"); renderDiffIfReady(); return { applied: false, validation: state.lastPreview.validation }; } const result = await api("/api/patch/apply", { method: "POST", body: JSON.stringify({ patch: state.lastPatch }) }); if (!result.applied) { state.lastPreview = { validation: result.validation, diff: "" }; renderDiffIfReady(); throw new Error("修改建议未通过校验，未应用。 "); } toast(result.commitError ? "修改已应用，但版本记录被跳过。" : "接受并提交成功。 "); const current = state.currentFile; state.lastPatch = null; state.lastPreview = null; state.lastWorkflow = null; await loadProjectDetails(false); if (current) await loadChapter(current); setView("editor"); return result; }
     async function manualReviseCurrentBlock() { const chapter = state.currentChapter; if (!chapter) throw new Error("尚未加载章节。 "); const blockId = (chapter.blockIds || [])[0]; const block = chapter.blocks[blockId]; const suffix = block.text.trim() ? "\\n他停了一下，把手里的物件放回原处。" : "他停了一下，把手里的物件放回原处。"; const patch = await api("/api/patch/manual", { method: "POST", body: JSON.stringify({ file: chapter.file, blockId, afterText: `${block.text}${suffix}`, reason: "手动生成修改建议" }) }); state.lastPatch = patch; state.lastWorkflow = null; await previewPatch(false); setView("diff"); toast("已为当前段落生成手动修改建议。 "); }
-    function renderWorkflowEvidence() { const el = $("workflowEvidence"); if (!el) return; const workflow = state.lastWorkflow || state.lastPatch?.workflow; if (!workflow) { el.classList.add("hidden"); el.innerHTML = ""; return; } const invoked = workflow.geminiInvoked ? "是" : "否"; const sourceMap = { "gemini-3.1-pro-preview": "Gemini 直连", "codex-app-server": "Codex 本地服务", "local-workflow-fallback": "失败诊断" }; const source = sourceMap[workflow.source] || workflow.source || "待确认"; const reason = workflow.fallbackReason ? `<div class="check-row"><span>!</span><span>失败 / 回退原因</span><strong>${escapeHtml(workflow.fallbackReason)}</strong></div>` : ""; const fallback = workflow.localFallback ? `<div class="check-row"><span>!</span><span>兜底状态</span><strong class="bad">仅诊断，不可提交</strong></div>` : ""; const target = workflow.file ? `<div class="check-row"><span>▤</span><span>目标章节</span><strong>${escapeHtml(fileDisplayLabel(workflow.file))}</strong></div>` : ""; const workflowName = workflow.name || "PowerBook Gemini 整章修订"; const log = workflow.runLog ? `<div class="check-row"><span>☰</span><span>运行日志</span><strong>${escapeHtml(workflow.runLog)}</strong></div>` : ""; el.classList.remove("hidden"); el.innerHTML = `<h3 class="mt">工作流证据</h3><div class="check-list"><div class="check-row"><span>▣</span><span>工作流</span><strong>${escapeHtml(workflowName)}</strong></div>${target}<div class="check-row"><span>✦</span><span>模型</span><strong>${escapeHtml(workflow.model || "gemini-3.1-pro-preview")}</strong></div><div class="check-row"><span>⌘</span><span>脚本</span><strong>${escapeHtml(workflow.scriptPath || "scripts/polish_chapters_gemini.py")}</strong></div><div class="check-row"><span>▣</span><span>实际调用 Gemini</span><strong class="${workflow.geminiInvoked ? "ok" : "bad"}">${invoked}</strong></div><div class="check-row"><span>→</span><span>建议来源</span><strong>${escapeHtml(source)}</strong></div>${fallback}${reason}${log}</div>`; }
-    function renderDiffIfReady() { const patch = state.lastPatch; if (!patch) { $("rawDiff").textContent = ""; $("acceptPatchBtn").disabled = true; $("invalidPatchActions").classList.add("hidden"); renderWorkflowEvidence(); return; } const change = patch.changes?.[0] || {}; const workflow = state.lastWorkflow || patch.workflow || {}; const diagnosticOnly = !!(workflow.diagnosticOnly || workflow.localFallback || patch.safety?.diagnosticOnly); const file = change.file || workflow.file || state.currentFile || ""; const blockId = change.targetBlockId || "—"; const source = (patch.sourceAnnotations || [])[0] || "USER"; const displayBlock = diagnosticOnly ? "整章诊断" : blockDisplayLabel(blockId); const before = diagnosticOnly ? (state.currentChapter ? `目标章节：${fileDisplayLabel(state.currentChapter.file)}
+    function renderWorkflowEvidence() { const el = $("workflowEvidence"); if (!el) return; const workflow = state.lastWorkflow || state.lastPatch?.workflow; if (!workflow) { el.classList.add("hidden"); el.innerHTML = ""; return; } const invoked = workflow.geminiInvoked ? "是" : "否"; const sourceMap = { "gemini-3.1-pro-preview": "Gemini 直连", "codex-app-server": workflow.chunked ? "Codex 分段" : "Codex 本地服务", "local-workflow-fallback": "失败诊断" }; const source = sourceMap[workflow.source] || workflow.source || "待确认"; const reason = workflow.fallbackReason ? `<div class="check-row"><span>!</span><span>失败 / 回退原因</span><strong>${escapeHtml(workflow.fallbackReason)}</strong></div>` : ""; const fallback = workflow.localFallback ? `<div class="check-row"><span>!</span><span>兜底状态</span><strong class="bad">仅诊断，不可提交</strong></div>` : ""; const target = workflow.file ? `<div class="check-row"><span>▤</span><span>目标章节</span><strong>${escapeHtml(fileDisplayLabel(workflow.file))}</strong></div>` : ""; const chunks = workflow.chunked ? `<div class="check-row"><span>≋</span><span>分段结果</span><strong>${escapeHtml(workflow.successfulChunkCount || 0)} / ${escapeHtml(workflow.chunkCount || 0)} 段</strong></div>` : ""; const workflowName = workflow.name || "PowerBook 受信任修订"; const log = workflow.runLog ? `<div class="check-row"><span>☰</span><span>运行日志</span><strong>${escapeHtml(workflow.runLog)}</strong></div>` : ""; el.classList.remove("hidden"); el.innerHTML = `<h3 class="mt">工作流证据</h3><div class="check-list"><div class="check-row"><span>▣</span><span>工作流</span><strong>${escapeHtml(workflowName)}</strong></div>${target}<div class="check-row"><span>✦</span><span>模型</span><strong>${escapeHtml(workflow.model || "gemini-3.1-pro-preview")}</strong></div><div class="check-row"><span>⌘</span><span>脚本</span><strong>${escapeHtml(workflow.scriptPath || "scripts/polish_chapters_gemini.py")}</strong></div><div class="check-row"><span>▣</span><span>实际调用 Gemini</span><strong class="${workflow.geminiInvoked ? "ok" : "bad"}">${invoked}</strong></div><div class="check-row"><span>→</span><span>建议来源</span><strong>${escapeHtml(source)}</strong></div>${chunks}${fallback}${reason}${log}</div>`; }
+    function renderDiffIfReady() { const patch = state.lastPatch; if (!patch) { $("rawDiff").textContent = ""; $("acceptPatchBtn").disabled = true; $("invalidPatchActions").classList.add("hidden"); renderWorkflowEvidence(); return; } const change = patch.changes?.[0] || {}; const workflow = state.lastWorkflow || patch.workflow || {}; const diagnosticOnly = !!(workflow.diagnosticOnly || workflow.localFallback || patch.safety?.diagnosticOnly); const file = change.file || workflow.file || state.currentFile || ""; const blockId = change.targetBlockId || "—"; const source = (patch.sourceAnnotations || [])[0] || "USER"; const changedCount = Array.isArray(patch.changes) ? patch.changes.length : 0; const displayBlock = diagnosticOnly ? "整章诊断" : (workflow.chunked && changedCount > 1 ? `${changedCount} 个段落` : blockDisplayLabel(blockId)); const before = diagnosticOnly ? (state.currentChapter ? `目标章节：${fileDisplayLabel(state.currentChapter.file)}
 本次没有生成可应用正文修改。` : "本次没有生成可应用正文修改。") : (state.currentChapter?.blocks?.[blockId]?.text || ""); const after = diagnosticOnly ? (workflow.fallbackReason || patch.summary || "外部模型未返回可用整章建议。") : (change.afterText || ""); const valid = state.lastPreview?.validation?.valid ?? patch.validation?.valid; const issues = state.lastPreview?.validation?.issues || patch.validation?.issues || []; const isRejected = diagnosticOnly || valid === false || issues.length > 0; const needsRemap = issues.some((issue) => issue.code === "hash_mismatch"); $("diffTitle").textContent = file ? `${fileDisplayLabel(file)} · 修改差异审核` : "修改差异审核"; ["diffBlockTag", "beforeBlockTag", "afterBlockTag", "impactBlock"].forEach((id) => $(id).textContent = displayBlock); $("sourceAnnotation").textContent = patchSourceLabel(source); $("rulesUsed").textContent = ruleDisplayLabel((patch.rulesUsed || [])[0]); $("patchValidity").textContent = diagnosticOnly ? "诊断" : (valid === undefined ? "待预览" : (valid ? "通过" : "拒绝")); $("patchValidity").className = isRejected ? "bad" : "ok"; $("acceptPatchBtn").disabled = isRejected || valid === undefined; $("acceptPatchBtn").textContent = isRejected ? "无法提交" : "接受并提交"; $("invalidPatchActions").classList.toggle("hidden", !isRejected); $("remapAnnotationBtn").classList.toggle("hidden", !needsRemap); $("changeReason").textContent = diagnosticOnly ? "外部 Gemini/Codex 没有返回可用整章修改。本页只展示诊断，不能作为润色结果提交。请重试、缩小章节范围或检查网络/API 配置。" : (issues.length ? (needsRemap ? "校验未通过：批注锚点已经变化。请先重新定位批注，或重新生成修改建议。" : "校验未通过：请重新生成修改建议或检查章节状态。") : (change.reason || patch.summary || "根据批注生成建议修改。")); $("rawDiff").textContent = diagnosticOnly ? `工作流诊断：未生成可提交正文修改
 目标章节：${file ? fileDisplayLabel(file) : "未选择章节"}
 原因：${workflow.fallbackReason || "外部模型未返回可用结果"}` : diffSafetySummary(file, displayBlock, valid, issues); $("diffReasonCard").classList.toggle("collapsed", !!state.diffReasonCollapsed); $("toggleDiffReasonBtn").textContent = state.diffReasonCollapsed ? "展开" : "收起"; $("toggleDiffReasonBtn").setAttribute("aria-expanded", String(!state.diffReasonCollapsed)); $("beforeLines").innerHTML = splitLines(before).map((line, idx) => `<div class="diff-line minus"><span class="ln">${idx + 1}</span><span>${escapeHtml(line)}</span><span>−</span></div>`).join(""); $("afterLines").innerHTML = splitLines(after).map((line, idx) => `<div class="diff-line plus"><span class="ln">${idx + 1}</span><span>${escapeHtml(line)}</span><span>＋</span></div>`).join(""); $("changeCheckList").innerHTML = diagnosticOnly ? `<div class="check-row"><span>!</span><span>没有可应用正文修改</span><strong class="bad">诊断</strong></div><div class="check-row"><span>↻</span><span>建议操作</span><strong>重试 / 缩小章节</strong></div>` : (issues.length ? issues.map((issue) => `<div class="check-row"><span>!</span><span>${escapeHtml(safetyIssueLabel(issue.code))}</span><strong class="bad">拒绝</strong></div>`).join("") : `<div class="check-row"><span>▤</span><span>修改的块<br><span class="muted">${escapeHtml(displayBlock)}</span></span>${statusBadge("通过")}</div><div class="check-row"><span>✦</span><span>将应用的规则</span><strong class="ok">${escapeHtml(ruleDisplayLabel((patch.rulesUsed || [])[0]))}</strong></div><div class="check-row"><span>🔒</span><span>锁定章节保持不变</span>${statusBadge("是")}</div>`); $("commitPreview").textContent = isRejected ? (diagnosticOnly ? "当前只是工作流失败诊断，不会写入或提交。" : "当前建议未通过运行时校验，不能写入或提交。") : `安全应用修改建议：${patchSourceLabel(source)}`; renderWorkflowEvidence(); }
@@ -792,9 +796,10 @@ class RuntimeWebApp:
             raise ProjectLoadError("当前项目没有可修订章节。")
         safe_chapter_path(context.root, file_path)
         mode = _optional_string(payload, "mode") or "ch01-author-notes"
-        instruction = _optional_string(payload, "instruction") or "按 PowerBook 原始 Codex/Gemini 流程修订当前章节；只输出 PatchProposal。"
+        instruction = _optional_string(payload, "instruction") or "按 PowerBook 原始 Codex/Gemini 流程修订当前章节；只输出可审核修改建议。"
         timeout = _optional_number(payload, "timeoutSeconds") or DEFAULT_POWERBOOK_WORKFLOW_TIMEOUT_SECONDS
         prefer_direct_gemini = _bool_payload(payload, "directGemini") or _bool_payload(payload, "invokeGemini")
+        requested_chunked = _bool_payload(payload, "chunked") or _bool_payload(payload, "chunkedCodex")
         workflow = powerbook_workflow_metadata(context.root, file_path, mode=mode)
         fallback_reason = ""
         direct_summary: Dict[str, Any] | None = None
@@ -836,6 +841,22 @@ class RuntimeWebApp:
                 }
             fallback_reason = str(workflow.get("fallbackReason") or direct.get("error") or "gemini_patch_failed_runtime_validation")
 
+        use_chunked = (not prefer_direct_gemini) and (requested_chunked or powerbook_chapter_needs_chunking(context, file_path))
+        if use_chunked:
+            chunked = self._run_powerbook_chunked_codex(
+                runtime,
+                context,
+                file_path,
+                instruction=instruction,
+                mode=mode,
+                timeout=timeout,
+                fallback_reason=fallback_reason,
+                direct_summary=direct_summary,
+            )
+            if chunked.get("source") != "local-workflow-fallback":
+                return chunked
+            fallback_reason = str(chunked.get("fallbackFrom", {}).get("reason") or chunked.get("workflow", {}).get("fallbackReason") or fallback_reason)
+
         try:
             prompt = build_powerbook_gemini_chapter_prompt(
                 context,
@@ -858,11 +879,11 @@ class RuntimeWebApp:
         workflow["source"] = "codex-app-server"
         workflow["geminiInvoked"] = bool(workflow.get("geminiInvoked"))
         if not workflow.get("fallbackReason") and not direct_attempted:
-            workflow["fallbackReason"] = "本次选择“生成整章修订建议”，未直连 Gemini；由 Codex 本地服务按 Gemini 工作流生成 PatchProposal。"
+            workflow["fallbackReason"] = "本次未直连 Gemini；由 Codex 本地服务按 Gemini 工作流生成修改建议。"
         workflow["runLog"] = (
-            "已调用 Codex app-server，使用项目内 PowerBook 上下文生成整章 PatchProposal。"
+            "已调用 Codex app-server，使用项目内 PowerBook 上下文生成整章修改建议。"
             if not direct_attempted
-            else "Gemini 直连未产出可应用 PatchProposal；已回退到 Codex app-server 生成整章建议。"
+            else "Gemini 直连未产出可应用修改建议；已回退到 Codex app-server 生成整章建议。"
         )
         if direct_summary is not None:
             workflow["directGemini"] = direct_summary
@@ -887,45 +908,160 @@ class RuntimeWebApp:
             if not validation_is_valid(validation)
             else "codex_patch_had_no_changes"
         )
+        return self._powerbook_local_diagnostic_response(
+            runtime,
+            file_path,
+            mode=mode,
+            reason=str(workflow.get("fallbackReason") or "外部工作流未返回可用修改建议。"),
+            codex_summary=codex_summary,
+            codex_result=codex_result,
+            workflow=workflow,
+        )
+
+    def _run_powerbook_chunked_codex(
+        self,
+        runtime: RuntimeOrchestrator,
+        context,
+        file_path: str,
+        *,
+        instruction: str,
+        mode: str,
+        timeout: float,
+        fallback_reason: str = "",
+        direct_summary: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        assert self.project_root is not None
+        chunk_specs = build_powerbook_gemini_chunk_prompts(context, file_path, instruction=instruction, mode=mode)
+        successful: list[Mapping[str, Any]] = []
+        chunk_summaries: list[Dict[str, Any]] = []
+        per_chunk_timeout = max(20.0, min(float(timeout), 75.0))
+        for spec in chunk_specs:
+            try:
+                result = self.codex_client.run_patch_proposal_turn(
+                    prompt=str(spec["prompt"]),
+                    cwd=self.project_root,
+                    approval_handler=self._codex_approval_handler,
+                    patch_validator=runtime.validate_patch,
+                    timeout_seconds=per_chunk_timeout,
+                )
+            except Exception as exc:
+                result = {"ok": False, "error": str(exc)}
+            summary = summarize_codex_result(result)
+            summary.update({"chunkIndex": spec["index"], "chunkTotal": spec["total"], "blockIds": spec["blockIds"]})
+            chunk_summaries.append(summary)
+            proposal = result.get("patchProposal")
+            validation = result.get("patchValidation")
+            if result.get("ok") and validation_is_valid(validation) and patch_has_changes(proposal) and isinstance(proposal, Mapping):
+                successful.append(proposal)
+
+        workflow = powerbook_workflow_metadata(context.root, file_path, mode=mode)
+        workflow.update(
+            {
+                "source": "codex-app-server",
+                "geminiInvoked": False,
+                "chunked": True,
+                "chunkCount": len(chunk_specs),
+                "successfulChunkCount": len(successful),
+                "failedChunkCount": len(chunk_specs) - len(successful),
+                "chunkSummaries": chunk_summaries,
+                "runLog": "已按小节/段落调用 Codex app-server；每段返回修改建议后再合并审核。",
+            }
+        )
+        if direct_summary is not None:
+            workflow["directGemini"] = direct_summary
+        if not successful:
+            reason = fallback_reason or _chunk_failure_reason(chunk_summaries) or "Codex 分段修订没有返回可应用修改。"
+            workflow["fallbackReason"] = reason
+            return self._powerbook_local_diagnostic_response(
+                runtime,
+                file_path,
+                mode=mode,
+                reason=reason,
+                codex_summary={"ok": False, "chunked": True, "chunks": chunk_summaries},
+                codex_result={"threadId": "powerbook-chunked", "turnId": "powerbook-chunked"},
+                workflow=workflow,
+            )
+
+        merged = merge_powerbook_chunk_patches(context, file_path, successful, workflow=workflow)
+        validation = runtime.validate_patch(merged)
+        merged["workflow"]["patchValidation"] = validation
+        if not validation_is_valid(validation) or not patch_has_changes(merged):
+            reason = _validation_issue_summary(validation) or "Codex 分段修订合并后未通过运行时校验。"
+            workflow["fallbackReason"] = reason
+            return self._powerbook_local_diagnostic_response(
+                runtime,
+                file_path,
+                mode=mode,
+                reason=reason,
+                codex_summary={"ok": False, "chunked": True, "chunks": chunk_summaries, "patchValidation": validation},
+                codex_result={"threadId": "powerbook-chunked", "turnId": "powerbook-chunked"},
+                workflow=workflow,
+            )
+        return {
+            "runId": "powerbook-codex-chunked-run",
+            "skill": "powerbook-gemini-chapter",
+            "source": "codex-app-server",
+            "workflow": merged["workflow"],
+            "events": [{"type": "powerbook.codex.chunked_patch.ready", "summary": {"ok": True, "chunks": chunk_summaries}, "workflow": merged["workflow"]}],
+            "output": merged,
+            "codex": {"ok": True, "chunked": True, "chunks": chunk_summaries},
+        }
+
+    def _powerbook_local_diagnostic_response(
+        self,
+        runtime: RuntimeOrchestrator,
+        file_path: str,
+        *,
+        mode: str,
+        reason: str,
+        codex_summary: Mapping[str, Any] | None = None,
+        codex_result: Mapping[str, Any] | None = None,
+        workflow: Mapping[str, Any] | None = None,
+    ) -> Dict[str, Any]:
         try:
-            local_reason = str(workflow.get("fallbackReason") or "外部工作流未返回可用 PatchProposal。")
             local_patch = build_powerbook_local_chapter_patch(
                 runtime.refreshed_context(),
                 file_path,
-                reason=local_reason,
+                reason=reason,
                 mode=mode,
             )
+            if workflow:
+                local_patch["workflow"].update({key: value for key, value in workflow.items() if key in {"chunked", "chunkCount", "successfulChunkCount", "failedChunkCount", "chunkSummaries", "directGemini"}})
             local_validation = runtime.validate_patch(local_patch)
             local_patch["workflow"]["patchValidation"] = local_validation
+            result = dict(codex_result or {})
+            summary = dict(codex_summary or {})
             return {
-                "runId": codex_result.get("turnId") or codex_result.get("threadId") or "powerbook-local-fallback",
+                "runId": result.get("turnId") or result.get("threadId") or "powerbook-local-fallback",
                 "skill": "powerbook-gemini-chapter",
                 "source": "local-workflow-fallback",
                 "workflow": local_patch["workflow"],
-                "events": [{"type": "powerbook.local_fallback.diagnostic", "summary": codex_summary, "workflow": local_patch["workflow"]}],
+                "events": [{"type": "powerbook.local_fallback.diagnostic", "summary": summary, "workflow": local_patch["workflow"]}],
                 "output": local_patch,
-                "codex": codex_summary,
-                "fallbackFrom": {"source": workflow.get("source"), "reason": workflow.get("fallbackReason")},
+                "codex": summary,
+                "fallbackFrom": {"source": (workflow or {}).get("source", "codex-app-server"), "reason": reason},
             }
         except Exception as exc:
-            workflow["localFallbackError"] = str(exc)
-        if isinstance(proposal, dict):
-            proposal["workflow"] = dict(workflow)
-        return {
-            "runId": codex_result.get("turnId") or codex_result.get("threadId") or "powerbook-codex-run",
-            "skill": "powerbook-gemini-chapter",
-            "source": "codex-app-server",
-            "workflow": workflow,
-            "events": [{"type": "powerbook.codex.patch.rejected", "summary": codex_summary, "workflow": workflow}],
-            "output": proposal or {
-                "id": "PP-powerbook-empty",
-                "summary": "导入工作流没有生成可应用修改。",
-                "sourceAnnotations": ["USER-powerbook-gemini-workflow"],
-                "rulesUsed": [],
-                "changes": [],
-            },
-            "codex": codex_summary,
-        }
+            fallback_workflow = dict(workflow or {})
+            fallback_workflow["localFallbackError"] = str(exc)
+            return {
+                "runId": "powerbook-local-fallback-error",
+                "skill": "powerbook-gemini-chapter",
+                "source": "local-workflow-fallback",
+                "workflow": fallback_workflow,
+                "events": [{"type": "powerbook.local_fallback.error", "workflow": fallback_workflow}],
+                "output": {
+                    "id": "PP-powerbook-empty",
+                    "summary": "导入工作流没有生成可应用修改。",
+                    "sourceAnnotations": ["USER-powerbook-gemini-workflow"],
+                    "rulesUsed": [],
+                    "changes": [],
+                    "safety": {"diagnosticOnly": True, "acceptDisabled": True},
+                    "workflow": fallback_workflow,
+                },
+                "codex": dict(codex_summary or {}),
+                "fallbackFrom": {"source": (workflow or {}).get("source", "codex-app-server"), "reason": reason},
+            }
 
     def _codex_approval_handler(self, message: Dict[str, Any]) -> Dict[str, Any]:
         runtime = self._require_runtime()
@@ -1379,6 +1515,34 @@ def _bool_payload(payload: Mapping[str, Any], key: str) -> bool:
     if isinstance(value, str):
         return value.lower() not in {"0", "false", "no", "off", ""}
     return bool(value)
+
+
+def _chunk_failure_reason(summaries: list[Mapping[str, Any]]) -> str:
+    errors = [str(item.get("error")) for item in summaries if item.get("error")]
+    if errors:
+        return "；".join(errors[:3])
+    failed = [
+        _validation_issue_summary(item.get("patchValidation"))
+        for item in summaries
+        if not item.get("ok")
+    ]
+    failed = [item for item in failed if item]
+    return "；".join(failed[:3])
+
+
+def _validation_issue_summary(validation: object) -> str:
+    if not isinstance(validation, Mapping):
+        return ""
+    issues = validation.get("issues")
+    if not isinstance(issues, list):
+        return ""
+    messages: list[str] = []
+    for issue in issues:
+        if isinstance(issue, Mapping):
+            messages.append(str(issue.get("message") or issue.get("code") or ""))
+        else:
+            messages.append(str(issue))
+    return "；".join(item for item in messages[:3] if item)
 
 
 def _optional_number(payload: Mapping[str, Any], key: str) -> float | None:

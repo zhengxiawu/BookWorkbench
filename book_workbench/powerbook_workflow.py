@@ -16,7 +16,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Iterable, Mapping
 
 from .models import ProjectContext
 from .project import markdown_title, manuscript_word_count, safe_chapter_path
@@ -26,6 +26,8 @@ POWERBOOK_GEMINI_MODEL = "gemini-3.1-pro-preview"
 POWERBOOK_POLISH_SCRIPT = "scripts/polish_chapters_gemini.py"
 POWERBOOK_SOURCE_ANNOTATION = "USER-powerbook-gemini-workflow"
 GEMINI_CHAT_SCRIPT = Path.home() / ".codex" / "skills" / "aiserverai-llm-scripts" / "scripts" / "chat_text.py"
+POWERBOOK_CHUNK_CHAR_TARGET = 1800
+POWERBOOK_CHUNK_CHAR_HARD_LIMIT = 2600
 
 
 def powerbook_workflow_available(root: Path) -> bool:
@@ -392,6 +394,226 @@ def build_powerbook_gemini_chapter_prompt(
         "Do not include `mw:block` anchors in `afterText`. Do not invent citations, years, page numbers, policies, "
         "or unverified facts; use claim register/revision log context only as boundaries.\n"
         "The Runtime will validate, preview, and require explicit user acceptance before any write or Git commit.\n\n"
+        f"Context JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )
+
+
+def powerbook_chapter_needs_chunking(
+    context: ProjectContext,
+    file_path: str,
+    *,
+    char_threshold: int = 4800,
+    block_threshold: int = 24,
+) -> bool:
+    """Return whether a chapter should use bounded section/block chunks.
+
+    The real PowerBook first chapter is roughly 8k visible characters and has
+    many Markdown sections. Sending that whole chapter to Codex in a single
+    app-server turn has repeatedly timed out in QA, so large chapters should be
+    revised in smaller Prompt/PatchProposal turns and merged by Runtime.
+    """
+
+    blocks = list((context.blocks.get(file_path) or {}).values())
+    visible_chars = manuscript_word_count("\n".join(block.text for block in blocks))
+    return visible_chars >= char_threshold or len(blocks) >= block_threshold
+
+
+def build_powerbook_gemini_chunk_prompts(
+    context: ProjectContext,
+    file_path: str,
+    *,
+    instruction: str = "",
+    mode: str = "ch01-author-notes",
+    char_target: int = POWERBOOK_CHUNK_CHAR_TARGET,
+    hard_limit: int = POWERBOOK_CHUNK_CHAR_HARD_LIMIT,
+) -> list[Dict[str, Any]]:
+    """Build small trusted-workflow prompts for section/block batches.
+
+    Each chunk still returns a normal PatchProposal and is validated by the same
+    Runtime validator.  The only difference from the whole-chapter prompt is
+    that the output contract limits allowed targets to a bounded subset of
+    blocks, making the model turn short enough for real app-server operation.
+    """
+
+    safe_chapter_path(context.root, file_path)
+    if not powerbook_workflow_available(context.root):
+        raise ValueError("当前项目不是 PowerBook 导入项目，不能运行 PowerBook 专用工作流。")
+    blocks = list((context.blocks.get(file_path) or {}).values())
+    if not blocks:
+        raise ValueError(f"章节没有可修订的正文块：{file_path}")
+
+    groups = _chunk_blocks(blocks, char_target=char_target, hard_limit=hard_limit)
+    total = len(groups)
+    prompts: list[Dict[str, Any]] = []
+    for index, group in enumerate(groups, start=1):
+        prompts.append(
+            {
+                "index": index,
+                "total": total,
+                "blockIds": [block.id for block in group],
+                "prompt": _build_powerbook_chunk_prompt(
+                    context,
+                    file_path,
+                    group,
+                    chunk_index=index,
+                    chunk_total=total,
+                    instruction=instruction,
+                    mode=mode,
+                ),
+            }
+        )
+    return prompts
+
+
+def merge_powerbook_chunk_patches(
+    context: ProjectContext,
+    file_path: str,
+    patches: Iterable[Mapping[str, Any]],
+    *,
+    workflow: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """Merge validated chunk PatchProposals into one reviewable proposal."""
+
+    safe_chapter_path(context.root, file_path)
+    rules: list[str] = []
+    changes: list[Dict[str, Any]] = []
+    seen_targets: set[tuple[str, str]] = set()
+    source_annotations = {POWERBOOK_SOURCE_ANNOTATION}
+    for patch in patches:
+        for source in patch.get("sourceAnnotations", []):
+            if isinstance(source, str):
+                source_annotations.add(source)
+        for rule_id in patch.get("rulesUsed", []):
+            if isinstance(rule_id, str) and rule_id not in rules:
+                rules.append(rule_id)
+        for change in patch.get("changes", []):
+            if not isinstance(change, Mapping):
+                continue
+            if str(change.get("file", "")) != file_path:
+                continue
+            key = (str(change.get("file", "")), str(change.get("targetBlockId", "")))
+            if key in seen_targets:
+                continue
+            seen_targets.add(key)
+            changes.append(dict(change))
+    changes.sort(key=lambda item: context.block(str(item["file"]), str(item["targetBlockId"])).anchor_line)
+    merged_workflow = {
+        **powerbook_workflow_metadata(context.root, file_path),
+        **dict(workflow or {}),
+        "source": "codex-app-server",
+        "chunked": True,
+        "chunkedMerge": True,
+        "runLog": "Codex 已按小节/段落分批返回修改建议；BookWorkbench 已合并为一次差异审核。",
+    }
+    if not rules:
+        rules = [rule.id for rule in applicable_rules(context, file_path)[:3]]
+    return {
+        "id": f"PP-powerbook-chunked-{Path(file_path).stem}",
+        "summary": f"按 PowerBook 分段工作流修订《{markdown_title(context.root, file_path)}》。",
+        "sourceAnnotations": sorted(source_annotations),
+        "rulesUsed": rules,
+        "changes": _mark_reviewed_changes(context, changes),
+        "workflow": merged_workflow,
+        "safety": {
+            "impactScope": "current_chapter",
+            "writePath": "PatchProposal",
+            "chunked": True,
+        },
+    }
+
+
+def _chunk_blocks(blocks, *, char_target: int, hard_limit: int):  # noqa: ANN001 - internal list of MarkdownBlock
+    groups = []
+    current = []
+    current_chars = 0
+    for block in blocks:
+        block_chars = manuscript_word_count(block.text)
+        starts_new_section = block.text.lstrip().startswith("## ") and current
+        over_target = current and current_chars + block_chars > char_target
+        over_hard = current and current_chars >= hard_limit
+        if starts_new_section or over_target or over_hard:
+            groups.append(current)
+            current = []
+            current_chars = 0
+        current.append(block)
+        current_chars += block_chars
+        if current_chars >= hard_limit:
+            groups.append(current)
+            current = []
+            current_chars = 0
+    if current:
+        groups.append(current)
+    return groups
+
+
+def _build_powerbook_chunk_prompt(
+    context: ProjectContext,
+    file_path: str,
+    blocks,
+    *,
+    chunk_index: int,
+    chunk_total: int,
+    instruction: str,
+    mode: str,
+) -> str:  # noqa: ANN001 - internal list of MarkdownBlock
+    title = markdown_title(context.root, file_path)
+    script_text = _read_optional(context.root / POWERBOOK_POLISH_SCRIPT, limit=8000)
+    claim_register = _read_optional(context.root / "claims" / "claim_register.yaml", limit=6000)
+    revision_logs = _read_revision_logs(context.root, limit=8000)
+    import_meta = _read_import_meta(context.root)
+    task = _mode_task(mode, instruction)
+    allowed_blocks = [
+        {"blockId": block.id, "beforeHash": block.before_hash, "text": block.text}
+        for block in blocks
+    ]
+    payload: Dict[str, Any] = {
+        "trustedWorkflow": {
+            **powerbook_workflow_metadata(context.root, file_path, mode=mode),
+            "chunked": True,
+            "chunkIndex": chunk_index,
+            "chunkTotal": chunk_total,
+        },
+        "userInstruction": instruction or "按 PowerBook 原始 Codex/Gemini 流程修订当前章节分段，输出可审核的 PatchProposal。",
+        "task": task,
+        "bookSpec": context.book_spec[:6000],
+        "styleGuide": context.style_guide[:6000],
+        "chapter": {
+            "file": file_path,
+            "title": title,
+            "status": context.status_for_file(file_path),
+            "chunkIndex": chunk_index,
+            "chunkTotal": chunk_total,
+            "allowedBlocks": allowed_blocks,
+        },
+        "applicableRules": [rule_to_dict(rule) for rule in applicable_rules(context, file_path)],
+        "powerbookContext": {
+            "sourceTreeHash": import_meta.get("sourceTreeHash"),
+            "statusMapping": import_meta.get("statusMapping", {}),
+            "claimRegister": claim_register,
+            "revisionLogs": revision_logs,
+            "originalScriptExcerpt": script_text,
+        },
+        "outputContract": {
+            "type": "PatchProposal",
+            "sourceAnnotationsMustInclude": POWERBOOK_SOURCE_ANNOTATION,
+            "requiredTopLevelFields": ["id", "summary", "sourceAnnotations", "rulesUsed", "changes"],
+            "requiredChangeFields": ["file", "targetBlockId", "operation", "beforeHash", "afterText", "reason"],
+            "allowedOperation": "replace_block",
+            "targetFileMustBe": file_path,
+            "allowedTargetBlocks": [block.id for block in blocks],
+            "exactBeforeHashes": {block.id: block.before_hash for block in blocks},
+            "minimumUsefulRevision": "如果修改，至少返回一个实质改写；不要用一句模板话冒充整章润色。若本段不需改，可返回 changes: []。",
+        },
+    }
+    return (
+        "Use the project-local PowerBook workflow context. The user clicked the trusted "
+        "`Codex 分段修订本章` entry; this is not annotation text and not permission to write files.\n"
+        "This is a bounded chunk of a larger chapter. Revise only the allowed blocks in this chunk, "
+        "but preserve continuity with the full chapter style. Return exactly one PatchProposal JSON object "
+        "and no markdown. Do not write files, do not edit `.bookai/*`, do not run commands, and do not invent "
+        "citations, years, page numbers, policies, or unverified facts. Every change must target the exact "
+        "file/block/hash listed below and must omit `mw:block` anchors in `afterText`.\n"
+        "The Runtime will merge validated chunks, preview one Diff, and require explicit user acceptance.\n\n"
         f"Context JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
 

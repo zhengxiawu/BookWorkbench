@@ -234,7 +234,8 @@ def validate_patch(context: ProjectContext, patch: object, *, allow_reviewed: bo
             )
 
     if whole_chapter_intent and changes and not any(issue.code == "missing_change_field" for issue in issues):
-        changed_text = "\n".join(str(change.get("afterText", "")) for change in changes if isinstance(change, dict))
+        changed_texts = [str(change.get("afterText", "")) for change in changes if isinstance(change, dict)]
+        changed_text = "\n".join(changed_texts)
         changed_chars = len("".join(changed_text.split()))
         changed_files = {str(change.get("file", "")) for change in changes if isinstance(change, dict)}
         existing_chars = 0
@@ -248,6 +249,24 @@ def validate_patch(context: ProjectContext, patch: object, *, allow_reviewed: bo
                     "Whole-chapter workflow proposals must contain a substantial, reviewable chapter revision instead of a tiny placeholder edit.",
                 )
             )
+        if existing_chars >= 4800:
+            changed_block_ratio = len(changes) / max(1, sum(len(context.blocks.get(file_path) or {}) for file_path in changed_files))
+            changed_char_ratio = changed_chars / max(1, existing_chars)
+            if changed_block_ratio < 0.18 or changed_char_ratio < 0.12:
+                issues.append(
+                    _validation_issue(
+                        "low_quality_whole_chapter_patch",
+                        "Large PowerBook chapter workflow proposals must revise a meaningful section/batch, not a token single-paragraph edit.",
+                    )
+                )
+        for after_text in changed_texts:
+            if _template_like_powerbook_output(after_text):
+                issues.append(
+                    _validation_issue(
+                        "low_quality_whole_chapter_patch",
+                        "PowerBook workflow proposals must not use generic template prose as a fallback manuscript edit.",
+                    )
+                )
 
     return ValidationResult(
         valid=not any(issue.severity == "error" for issue in issues),
@@ -255,6 +274,18 @@ def validate_patch(context: ProjectContext, patch: object, *, allow_reviewed: bo
         touches_locked=touches_locked,
         touches_reviewed=touches_reviewed,
     )
+
+
+def _template_like_powerbook_output(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", text)
+    template_markers = (
+        "这一段需要先落到可见处境",
+        "本地安全兜底",
+        "模板正文",
+        "外部模型未返回",
+        "未生成可应用正文修改",
+    )
+    return any(marker in normalized for marker in template_markers)
 
 
 def _short_text_hash(text: str, *, length: int = 8) -> str:
