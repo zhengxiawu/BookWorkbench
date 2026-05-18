@@ -87,6 +87,9 @@ class ProjectCreatorTests(unittest.TestCase):
             self.assertGreaterEqual(chapter.count("\n## "), 5)
             self.assertGreaterEqual(len(chapter), 7000)
             self.assertIn("权力，是稳定改写他人行动空间的能力", chapter)
+            self.assertGreaterEqual(len(list((project / "chapters").glob("*.md"))), 34)
+            self.assertTrue((project / "chapters" / "ch02_body_fear_obedience.md").exists())
+            self.assertTrue((project / "chapters" / "ch33_conclusion_seeing_action_space.md").exists())
 
 
 

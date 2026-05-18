@@ -225,6 +225,34 @@ class CodexAppServerClient:
             result["ok"] = bool(result.get("ok")) and bool(result["patchValidation"].get("valid"))
         return result
 
+    def run_autonomous_turn(
+        self,
+        *,
+        prompt: str,
+        cwd: str | Path | None = None,
+        developer_instructions: str | None = None,
+        approval_handler: ServerRequestHandler | None = None,
+        timeout_seconds: float | None = None,
+    ) -> Dict[str, Any]:
+        """Run Codex in a scratch workspace where file edits are allowed.
+
+        This is the autonomous-writing seam.  The caller must pass a scratch
+        ``cwd`` and must still convert any resulting file changes into a
+        Runtime-validated PatchProposal before official manuscript writes.  The
+        app-server sandbox is writable only for the scratch workspace and keeps
+        network access disabled by default.
+        """
+
+        return self.run_probe_turn(
+            prompt=prompt,
+            cwd=cwd,
+            developer_instructions=developer_instructions or self._default_autonomous_instructions(),
+            approval_handler=approval_handler,
+            timeout_seconds=timeout_seconds,
+            thread_sandbox="workspace-write",
+            sandbox_policy={"type": "workspaceWrite", "networkAccess": False},
+        )
+
     def run_probe_turn(
         self,
         *,
@@ -233,6 +261,8 @@ class CodexAppServerClient:
         developer_instructions: str | None = None,
         approval_handler: ServerRequestHandler | None = None,
         timeout_seconds: float | None = None,
+        thread_sandbox: str = "read-only",
+        sandbox_policy: Mapping[str, Any] | None = None,
     ) -> Dict[str, Any]:
         """Start a real app-server thread/turn and capture stream evidence.
 
@@ -268,6 +298,7 @@ class CodexAppServerClient:
                 session,
                 cwd=cwd,
                 developer_instructions=developer_instructions,
+                sandbox=thread_sandbox,
                 stderr_chunks=stderr_chunks,
                 notifications=notifications,
             )
@@ -276,6 +307,7 @@ class CodexAppServerClient:
                 session,
                 thread_id=thread_id,
                 prompt=prompt,
+                sandbox_policy=sandbox_policy,
                 stderr_chunks=stderr_chunks,
                 notifications=notifications,
             )
@@ -394,6 +426,7 @@ class CodexAppServerClient:
         *,
         cwd: str | Path | None,
         developer_instructions: str | None,
+        sandbox: str,
         stderr_chunks: List[str],
         notifications: List[Dict[str, Any]],
     ) -> str:
@@ -408,7 +441,7 @@ class CodexAppServerClient:
                     "cwd": str(Path(cwd).resolve() if cwd is not None else self.cwd) if (cwd is not None or self.cwd is not None) else None,
                     "ephemeral": True,
                     "approvalPolicy": "never",
-                    "sandbox": "read-only",
+                    "sandbox": sandbox,
                     "developerInstructions": developer_instructions or self._default_probe_instructions(),
                 },
             },
@@ -426,6 +459,7 @@ class CodexAppServerClient:
         *,
         thread_id: str,
         prompt: str,
+        sandbox_policy: Mapping[str, Any] | None,
         stderr_chunks: List[str],
         notifications: List[Dict[str, Any]],
     ) -> str:
@@ -440,7 +474,7 @@ class CodexAppServerClient:
                     "threadId": thread_id,
                     "input": [{"type": "text", "text": prompt}],
                     "approvalPolicy": "never",
-                    "sandboxPolicy": {"type": "readOnly", "networkAccess": False},
+                    "sandboxPolicy": dict(sandbox_policy or {"type": "readOnly", "networkAccess": False}),
                 },
             },
         )
@@ -531,6 +565,17 @@ class CodexAppServerClient:
             "Required top-level fields: id, summary, sourceAnnotations, rulesUsed, changes. "
             "Each change must include file, targetBlockId, operation, beforeHash, afterText, reason. "
             "The Runtime will validate the proposal before any user-reviewed write."
+        )
+
+    @staticmethod
+    def _default_autonomous_instructions() -> str:
+        return (
+            "You are connected to BookWorkbench autonomous isolated-copy mode. "
+            "You may edit only the isolated working directory provided as cwd. "
+            "Do not access the original source project or external network. "
+            "Write run-plan/rules-delta/revision-log/quality-report artifacts when useful, "
+            "then revise the target chapter file in the isolated copy. Official manuscript writes are forbidden here; "
+            "BookWorkbench will diff the isolated copy and route changes through Runtime review."
         )
 
     @staticmethod

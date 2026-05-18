@@ -85,6 +85,11 @@ def write_minimal_powerbook(root: Path) -> Path:
     )
     (root / "outputs" / "reading_queue.md").write_text("# Reading Queue\n\n先读 ch01。\n", encoding="utf-8")
     (root / "templates" / "author_note.md").write_text("# template\n", encoding="utf-8")
+    (root / "outputs" / "backups" / "ch01_before_historical_opening_20260504_165119").mkdir(parents=True)
+    (root / "outputs" / "backups" / "ch01_before_historical_opening_20260504_165119" / "ch01_power.md").write_text(
+        "# 第一章 权力是什么\n\n## 1. 从普通处境进入\n\n旧版章节片段。\n",
+        encoding="utf-8",
+    )
     (root / "scripts" / "polish_chapters_gemini.py").write_text("print('noop')\n", encoding="utf-8")
     return root
 
@@ -127,6 +132,7 @@ class PowerBookImporterTests(unittest.TestCase):
             self.assertEqual(context.chapter_status["chapters/ch02_body.md"], "revised")
             self.assertEqual(context.status_for_file("chapters/ch02_body.md"), "unreviewed")
             imported = json.loads((project / ".bookai" / "powerbook-import.json").read_text(encoding="utf-8"))
+            memory = json.loads((project / ".bookai" / "powerbook-memory.json").read_text(encoding="utf-8"))
             self.assertEqual(result["baselineCommitCreated"], True)
             self.assertEqual(git_count(project), 1)
             self.assertEqual(git_status_short(project), "")
@@ -137,6 +143,13 @@ class PowerBookImporterTests(unittest.TestCase):
             self.assertIn("先用白话解释", context.annotations[0].text)
             self.assertNotIn("AUTHOR-NOTE", (project / "chapters" / "ch01_power.md").read_text(encoding="utf-8"))
             self.assertTrue((project / ".bookai" / "block-index.json").exists())
+            self.assertTrue((project / ".bookai" / "powerbook-memory.json").exists())
+            self.assertGreaterEqual(result["memoryArtifactCount"], 8)
+            self.assertEqual(memory["kind"], "powerbook-autonomous-memory")
+            self.assertGreaterEqual(memory["revisionLogCount"], 1)
+            self.assertGreaterEqual(memory["backupSnapshotCount"], 1)
+            self.assertTrue(any("处理作者批注" in item.get("text", "") for item in memory["excerpts"]))
+            self.assertTrue(any(item["path"].endswith("ch01_power.md") for item in memory["artifacts"]))
             self.assertTrue((project / "claims" / "claim_register.yaml").exists())
             self.assertTrue((project / "reviews" / "resolved" / "ch01_revision_log.md").exists())
             self.assertTrue((project / ".codex" / "skills" / "revise-with-annotations" / "SKILL.md").exists())

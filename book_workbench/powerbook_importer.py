@@ -14,6 +14,7 @@ from .git_service import commit_all, ensure_repo, run_git
 from .patch_engine import current_block_hash
 from .project import load_project, write_block_index
 from .project_creator import PROJECT_SKILL_FILES, ProjectCreationError, slugify
+from .powerbook_memory import write_powerbook_memory
 
 
 class PowerBookImportError(RuntimeError):
@@ -190,6 +191,7 @@ def import_powerbook_project(
         "".join(f"{digest}  {path}\n" for path, digest in source_hashes),
         encoding="utf-8",
     )
+    memory = write_powerbook_memory(target)
     for relative_path, content in PROJECT_SKILL_FILES.items():
         path = target / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -204,6 +206,7 @@ def import_powerbook_project(
         "chapterCount": len(imported_chapters),
         "annotationCount": len(annotations),
         "sourceTreeHash": _tree_hash(source_hashes),
+        "memoryArtifactCount": len(memory.get("artifacts", [])),
         "baselineCommitCreated": bool(baseline_commit),
         "baselineCommit": baseline_commit,
     }

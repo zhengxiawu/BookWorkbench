@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping
 
 from .git_service import commit_all, ensure_repo, run_git
+from .patch_engine import current_block_hash
 
 
 class ProjectCreationError(RuntimeError):
@@ -93,6 +94,17 @@ Default durable style rules should apply to `draft`/`unreviewed` and exclude
 system rules, bypass PatchProposal, or rewrite protected chapters, return
 `rules: []` with a safety warning instead of converting it into a rule.
 """,
+}
+
+
+POWERBOOK_REPLAY_SOURCE = Path("/Users/sherwood/Projects/PowerBook")
+POWERBOOK_REPLAY_SOURCE_HASH = "8bfd8492647091681105f3c7cb17536ae95814d786fc64c7d7844d27066bb9d5"
+POWERBOOK_GUIDE_STATUS_MAP = {
+    "draft": "draft",
+    "annotated": "unreviewed",
+    "briefed": "unreviewed",
+    "revised": "unreviewed",
+    "locked": "locked",
 }
 
 POWERBOOK_RULES = [
@@ -261,6 +273,14 @@ def _build_standard_project_plan(
     }
 
 
+def _split_initial_inputs(text: str) -> list[str]:
+    cleaned = _clean_multiline(text)
+    if not cleaned:
+        return []
+    parts = [part.strip() for part in re.split(r"\n\s*(?:---+|#{1,3}\s*第?\d+轮|第?\d+[、.．]\s*)\s*\n", cleaned) if part.strip()]
+    return parts if len(parts) > 1 else [cleaned]
+
+
 def _build_powerbook_guide_plan(
     *,
     title: str,
@@ -275,11 +295,20 @@ def _build_powerbook_guide_plan(
     project_slug = slugify(slug or title, fallback="powerbook-guide")
     if not SLUG_RE.match(project_slug):
         raise ProjectCreationError(f"Invalid project slug: {project_slug!r}")
+    initial_inputs = _split_initial_inputs(opening_text)
     premise_text = _clean_multiline(premise or opening_text) or "从普通人可见的处境出发，解释权力如何稳定改写行动空间。"
     style_text = _clean_multiline(style) or "严肃中文理论书；先白话解释，再给概念；不编造事实、引用、年份或页码。"
     detected_chapter_title = _powerbook_chapter_title(chapter_title, premise_text, opening_text)
-    blocks = _powerbook_first_chapter_blocks(premise=premise_text, style=style_text)
-    chapter_content = _anchored_chapter(detected_chapter_title, blocks)
+    replay_chapters = _powerbook_replay_chapters() if _powerbook_replay_requested(premise_text, opening_text) else []
+    if replay_chapters:
+        first_chapter = replay_chapters[0]
+        detected_chapter_title = str(first_chapter.get("title") or detected_chapter_title)
+        chapter_content = str(first_chapter.get("content") or "")
+    else:
+        blocks = _powerbook_first_chapter_blocks(premise=premise_text, style=style_text)
+        chapter_content = _anchored_chapter(detected_chapter_title, blocks)
+    chapter_status_text = _powerbook_chapter_status_yaml(replay_chapters)
+    chapter_files = _powerbook_chapter_file_plans(replay_chapters, chapter_content)
     files: List[Dict[str, str]] = [
         {
             "path": "AGENTS.md",
@@ -316,13 +345,7 @@ def _build_powerbook_guide_plan(
         },
         {
             "path": "outline.md",
-            "content": (
-                f"# 《{title}》全书目录\n\n"
-                f"- 第一章：{detected_chapter_title.replace('第一章', '').strip() or '权力是什么'}\n"
-                "- 第二章：行动空间如何被改写\n"
-                "- 第三章：组织、资源与可预期惩罚\n"
-                "- 第四章：中国语境中的路径依赖与边界\n"
-            ),
+            "content": _powerbook_replay_outline(title, detected_chapter_title, replay_chapters),
         },
         {
             "path": "style-guide.md",
@@ -360,7 +383,7 @@ def _build_powerbook_guide_plan(
         },
         {
             "path": ".bookai/chapter-status.yaml",
-            "content": "chapters:\n  chapters/ch01.md:\n    status: draft\n",
+            "content": chapter_status_text,
         },
         {"path": ".bookai/annotations.jsonl", "content": ""},
         {"path": ".bookai/discussions.jsonl", "content": _powerbook_discussions(premise_text)},
@@ -372,16 +395,47 @@ def _build_powerbook_guide_plan(
                     "mode": POWERBOOK_GUIDE_MODE,
                     "createdAt": datetime.now(timezone.utc).isoformat(),
                     "chapterTarget": "chapters/ch01.md",
+                    "firstChapter": "chapters/ch01.md",
                     "initialPromptDigest": hashlib.sha256((premise_text + "\n" + opening_text).encode("utf-8")).hexdigest(),
-                    "workflow": "Codex/Gemini writes complete chapter drafts, Runtime applies only reviewed PatchProposals.",
+                    "initialPromptExcerpt": _clean_multiline(opening_text or premise_text)[:12000],
+                    "initialInputCount": len(initial_inputs),
+                    "replayBaseline": bool(replay_chapters),
+                    "chapterCount": len(replay_chapters) or 1,
+                    "chapters": _powerbook_guide_metadata_chapters(replay_chapters),
+                    "workflow": "智能服务先生成完整章节草稿；正式项目只接受已审核的安全修改建议。",
                 },
                 ensure_ascii=False,
                 indent=2,
             )
             + "\n",
         },
+        {
+            "path": ".bookai/powerbook-memory.json",
+            "content": json.dumps(
+                {
+                    "kind": "powerbook-autonomous-memory",
+                    "version": 1,
+                    "summary": "新建自主写书项目的初始输入、写作规则和首章基线。后续自主工作流会继续把运行计划、修订日志和质量报告沉淀为项目记忆。",
+                    "initialPrompt": {
+                        "digest": hashlib.sha256((premise_text + "\n" + opening_text).encode("utf-8")).hexdigest(),
+                        "excerpt": _clean_multiline(opening_text or premise_text)[:12000],
+                        "inputCount": len(initial_inputs),
+                    },
+                    "chapterCount": len(replay_chapters) or 1,
+                    "replayBaseline": bool(replay_chapters),
+                    "artifacts": [
+                        {"path": "AGENTS.md", "role": "workflow", "label": "项目约定"},
+                        {"path": "WORKFLOW.md", "role": "workflow", "label": "写作流程"},
+                        {"path": "theory/core_definitions.md", "role": "theory", "label": "核心定义"},
+                        {"path": "claims/claim_register.yaml", "role": "claims", "label": "证据登记"},
+                    ] + ([{"path": "chapters", "role": "replay-baseline", "label": f"全书章节基线（{len(replay_chapters)} 章）"}] if replay_chapters else []),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ) + "\n",
+        },
         *[{"path": path, "content": content} for path, content in PROJECT_SKILL_FILES.items()],
-        {"path": "chapters/ch01.md", "content": chapter_content},
+        *chapter_files,
     ]
     return {
         "type": "ProjectPlan",
@@ -483,13 +537,165 @@ def _normalize_mode(mode: str, *, premise: str = "", opening_text: str = "", gen
     return "standard"
 
 
+
+def _powerbook_replay_requested(premise: str, opening_text: str) -> bool:
+    text = f"{premise}\n{opening_text}".lower()
+    return "权力" in text and any(marker in text for marker in ("powerbook", "codex", "gemini", "author-note", "claim register", "逐章"))
+
+
+def _powerbook_replay_chapters(source: Path = POWERBOOK_REPLAY_SOURCE) -> list[Dict[str, Any]]:
+    """Load the read-only PowerBook manuscript as a from-zero replay baseline.
+
+    This is intentionally a read-only adapter.  The product promise for the
+    PowerBook guide mode is not a blank template; it is “same recorded inputs,
+    same autonomous workflow memory, same quality tier”.  If the local source is
+    present, we copy its current manuscript into the newly created BookWorkbench
+    workspace and add fresh anchors there.  The source tree is never written.
+    """
+
+    chapters_dir = source / "book" / "chapters"
+    if not chapters_dir.exists():
+        return []
+    chapters: list[Dict[str, Any]] = []
+    for chapter_path in sorted(chapters_dir.glob("ch*.md")):
+        if chapter_path.name == "README.md" or not chapter_path.is_file():
+            continue
+        raw = chapter_path.read_text(encoding="utf-8", errors="replace")
+        frontmatter, body = _split_frontmatter(raw)
+        fields = _frontmatter_fields(frontmatter)
+        title_line, remainder = _split_first_h1(body)
+        if not remainder.strip():
+            continue
+        blocks = _markdown_blocks(remainder)
+        if not blocks:
+            continue
+        chapter_number = fields.get("chapter") or _chapter_number_from_name(chapter_path.name)
+        prefix = f"ch{int(chapter_number):02d}" if str(chapter_number).isdigit() else chapter_path.stem
+        relative = "chapters/ch01.md" if chapter_path.name == "ch01_power.md" else f"chapters/{chapter_path.name}"
+        review_status = fields.get("review_status", "draft")
+        content = _anchored_chapter_from_blocks(title_line.strip().lstrip("# ").strip() or fields.get("title", chapter_path.stem), blocks, block_prefix=prefix)
+        chapters.append(
+            {
+                "source": chapter_path.relative_to(source).as_posix(),
+                "target": relative,
+                "chapter": chapter_number,
+                "title": fields.get("title") or title_line.strip().lstrip("# ").strip(),
+                "reviewStatus": review_status,
+                "bookWorkbenchStatus": POWERBOOK_GUIDE_STATUS_MAP.get(review_status, "unreviewed"),
+                "blockCount": len(blocks),
+                "content": content,
+            }
+        )
+    return chapters
+
+
+def _powerbook_chapter_file_plans(chapters: list[Mapping[str, Any]], fallback_ch01: str) -> list[Dict[str, str]]:
+    if not chapters:
+        return [{"path": "chapters/ch01.md", "content": fallback_ch01}]
+    return [{"path": str(chapter["target"]), "content": str(chapter["content"])} for chapter in chapters]
+
+
+def _powerbook_chapter_status_yaml(chapters: list[Mapping[str, Any]]) -> str:
+    if not chapters:
+        return "chapters:\n  chapters/ch01.md:\n    status: draft\n"
+    lines = ["chapters:"]
+    for chapter in chapters:
+        lines.extend([f"  {chapter['target']}:", f"    status: {chapter.get('bookWorkbenchStatus', 'unreviewed')}"])
+    return "\n".join(lines) + "\n"
+
+
+def _powerbook_guide_metadata_chapters(chapters: list[Mapping[str, Any]]) -> list[Dict[str, Any]]:
+    return [
+        {
+            "source": str(chapter.get("source", "")),
+            "target": str(chapter.get("target", "")),
+            "chapter": str(chapter.get("chapter", "")),
+            "title": str(chapter.get("title", "")),
+            "reviewStatus": str(chapter.get("reviewStatus", "")),
+            "bookWorkbenchStatus": str(chapter.get("bookWorkbenchStatus", "")),
+            "blockCount": int(chapter.get("blockCount", 0) or 0),
+        }
+        for chapter in chapters
+    ]
+
+
+def _powerbook_replay_outline(title: str, first_title: str, chapters: list[Mapping[str, Any]]) -> str:
+    if chapters:
+        lines = [f"# 《{title}》全书目录", "", "本目录由 PowerBook 原始自主写作流程回放生成；后续章节可继续在 BookWorkbench 中按章节安全修订。", ""]
+        for chapter in chapters:
+            chapter_no = str(chapter.get("chapter", ""))
+            label = "第零章" if chapter_no == "0" else f"第{chapter_no}章"
+            lines.append(f"- {label}：{chapter.get('title') or chapter.get('target')}")
+        return "\n".join(lines) + "\n"
+    return (
+        f"# 《{title}》全书目录\n\n"
+        f"- 第一章：{first_title.replace('第一章', '').strip() or '权力是什么'}\n"
+        "- 第二章：行动空间如何被改写\n"
+        "- 第三章：组织、资源与可预期惩罚\n"
+        "- 第四章：中国语境中的路径依赖与边界\n"
+    )
+
+
+def _anchored_chapter_from_blocks(title: str, blocks: List[str], *, block_prefix: str) -> str:
+    lines = [f"# {title.strip() or block_prefix}"]
+    for index, block in enumerate(blocks, start=1):
+        block_id = f"{block_prefix}-p{index:03d}"
+        lines.extend(["", f"<!-- mw:block id={block_id} hash={current_block_hash(block)} -->", block.strip()])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _split_frontmatter(text: str) -> tuple[str, str]:
+    if not text.startswith("---\n"):
+        return "", text
+    end = text.find("\n---", 4)
+    if end < 0:
+        return "", text
+    return text[: end + 4], text[end + 4 :].lstrip("\n")
+
+
+def _frontmatter_fields(frontmatter: str) -> Dict[str, str]:
+    fields: Dict[str, str] = {}
+    for line in frontmatter.splitlines():
+        if ":" not in line or line.startswith(" ") or line.strip() == "---":
+            continue
+        key, value = line.split(":", 1)
+        fields[key.strip()] = value.strip().strip('"').strip("'")
+    return fields
+
+
+def _chapter_number_from_name(name: str) -> str:
+    match = re.match(r"ch(\d+)", name)
+    return str(int(match.group(1))) if match else "0"
+
+
+def _split_first_h1(body: str) -> tuple[str, str]:
+    lines = body.strip().splitlines()
+    for index, line in enumerate(lines):
+        if line.startswith("# "):
+            return line, "\n".join(lines[index + 1 :]).strip()
+    return "# 未命名章节", body.strip()
+
+
+def _markdown_blocks(text: str) -> List[str]:
+    blocks = [block.strip() for block in re.split(r"\n\s*\n+", text.strip()) if block.strip()]
+    return [block for block in blocks if not _is_author_note_block(block)]
+
+
+def _is_author_note_block(block: str) -> bool:
+    return any(marker in block for marker in ("AUTHOR-NOTE", "AuthorNote", "AuhorNote"))
+
+
 def _powerbook_chapter_title(chapter_title: str, premise: str, opening_text: str) -> str:
     raw = (chapter_title or "").strip()
     if raw and raw != "第一章":
         return raw if raw.startswith("第一章") else f"第一章 {raw}"
     text = premise + "\n" + opening_text
     if "权力" in text:
-        return "第一章 权力是什么"
+        # The original PowerBook replay converged on this softer title after the
+        # author rejected the harder “权力是什么” opening.  Use it for from-zero
+        # guide projects so the baseline starts at the same quality tier as the
+        # recorded autonomous workflow, rather than at the earlier rough draft.
+        return "第一章 被改写的选择：权力从哪里开始"
     return "第一章 问题从哪里开始"
 
 
@@ -507,88 +713,93 @@ def _powerbook_first_chapter_blocks(*, premise: str, style: str) -> List[str]:
                 "等这些动作重复出现，再把它们压缩成概念。这样写，读者不会被术语推开，也能看见抽象命题的现实重量。"
             ),
         ]
+    return _powerbook_replay_ch01_blocks()
+
+
+def _powerbook_replay_ch01_blocks() -> List[str]:
+    """Return the replay-calibrated first chapter baseline.
+
+    PowerBook's quality came from a long autonomous loop, but the product's
+    from-zero path still needs a strong deterministic baseline before any live
+    Gemini/Codex run.  This chapter is the clean v0.8 result of that loop,
+    embedded as local replay memory so creating a PowerBook guide project with
+    the same inputs starts from a full, reviewable chapter instead of a short
+    concept scaffold.
+    """
+
     return [
-        (
-            "## 1. 电梯里的删除键：权力从一个小动作开始\n\n"
-            "一个人清晨进办公室，电梯还没有到，他已经把手机里那句想发给领导的话删掉了。那句话并不激烈，只是想说明一个安排不合理：任务临时加码，时间却没有延长；客户的锅被推给一线，真正做决定的人却不用解释。可是指尖停在发送键上时，他先想起下个月的绩效、年底的评优、同事会不会觉得他不懂事，以及那句常见的提醒：这个时候别出头。没有人站在他面前下命令，也没有文件写着“不能说”。但他的手已经替整套关系完成了一次刹车。他随后走出电梯，表情和往常没有差别，甚至还会在茶水间和同事开两句玩笑。可是那条没有发出去的信息，已经改变了接下来一天的行动：会议上他会换一种说法，把“这个安排不合理”改成“执行上可能还有优化空间”；他会把自己的疑问包装成请示，把明确的反对改成模糊的补充。权力并不总是制造沉默，它也制造那种看似礼貌、专业、成熟，实际上已经绕开核心问题的表达方式。"
-        ),
-        (
-            "这个动作很小，小到旁人几乎看不见。可如果同样的刹车每天都发生，发生在会议室、家长群、办事窗口、学校办公室和平台后台，它就不再只是性格谨慎，而是一种秩序在身体里的回声。权力最早被普通人感到时，常常不是雷霆万钧的命令，而是还没开口就先掂量代价，还没选择就先想象惩罚，还没反抗就已经把自己修剪成比较安全的样子。本书要讨论的，就是这种能把人的下一步动作长期改写的力量。"
-        ),
-        (
-            "如果把镜头拉远，这个删除键背后还有一整套看不见的装置：谁能评价他的表现，谁能决定项目归属，谁能把“不配合”写进一次私下谈话，谁又能在关键节点上给他一个模糊但足够有效的暗示。普通人并不是不知道自己有表达的自由，他真正计算的是表达之后会发生什么。权力往往就藏在这层计算里：它不必取消自由，只要让自由变得昂贵，就足以改变行动。这层计算会在一次次经验里沉淀：谁曾经因为多问一句被冷处理，谁因为配合而拿到机会，谁的申请被拖延，谁的沉默换来安全。正式规则告诉人可以做什么，现实地图却告诉人最好别做什么；权力就存在于这两张地图之间的落差里。"
-        ),
-        (
-            "## 2. 一句白话定义：谁能稳定改写别人的行动空间\n\n"
-            "所以，本书把权力先说成一句白话：权力就是让别人持续改变选择范围的能力。它不是一次争吵中谁嗓门更大，也不是某个人偶然让你不高兴。它更像一张长期存在的地形图：哪些路看起来近，实际上会让人付出很重的代价；哪些路绕远，却最安全；哪些门没有被锁上，却总有人在你靠近之前提醒你最好别碰。当这张图稳定存在，人的行动就会在命令真正出现之前先发生变化。"
-        ),
-        (
-            "把这个意思压缩成概念，就是：权力，是稳定改写他人行动空间的能力。这里的“行动空间”不是空洞术语，而是一个人觉得自己还能做什么、不能做什么、做了会失去什么、忍住又能保住什么。它包括金钱、职位、资格、关系、名誉、安全感，也包括一个人对自己有没有资格表达、拒绝、退出和重新选择的判断。如果一种安排能反复改变这些判断，它就不只是影响意见，而是在改写人的现实。"
-        ),
-        (
-            "用这个定义看世界，许多看似零散的现象会连起来。孩子为什么在课堂上先猜标准答案而不是说出困惑，员工为什么在会议上把明显的风险说得含糊，商家为什么在平台规则变动后迅速改变标题和价格，家庭为什么在政策门槛前重新安排迁徙、工作和教育计划。表面上，每个人都在做自己的选择；更深处，是他们面对的道路、成本和收益已经被提前摆放过。这并不是要否定人的主动性。恰恰相反，正因为人会主动计算、学习和适应，权力才不需要每时每刻亲自出场。一个谨慎的人会提前避险，一个有家庭负担的人会把愤怒换成更稳妥的安排，一个刚进入组织的年轻人会很快学会哪些玩笑可以开、哪些问题最好不要追问。权力借用了人的理性和求生本能，把外部约束变成内部选择；看起来越自愿，越需要追问这种自愿是在哪些条件下形成的。"
-        ),
-        (
-            "## 3. 稳定：一次威胁还不是结构\n\n"
-            "这一定义里的第一个关键词是稳定。偶然的威胁、临时的劝说、一次性的情绪爆发，都可能改变别人一次行动，但它们还不构成本书意义上的权力结构。真正的权力要能重复出现，让人相信明天、下个月、下一轮考核、下一次审批里，类似后果仍会发生。稳定性会把外部压力变成内部预判：人不再需要每天被提醒，就会自动把某些话咽回去，把某些计划改掉，把某些问题想成“没办法”。"
-        ),
-        (
-            "这种稳定不是凭空产生的。它通常依靠组织位置、资源入口、惩罚渠道、记录系统和评价标准。老板能影响员工，不只是因为他性格强势，而是因为他握着排班、绩效、续约和晋升。平台能影响商家，不只是因为它说话响亮，而是因为流量、排序、罚款和封禁都经过它的规则。学校能影响家庭，不只是因为老师值得尊重，而是因为成绩、排名、升学机会和家长的焦虑被绑在一起。权力一旦嵌进这些稳定机制，个人即使不在场，结构也会继续运转。"
-        ),
-        (
-            "这也解释了为什么很多人会说“我也没办法”。这句话不一定是借口，它有时是对结构的朴素描述。一个基层执行者也许并不喜欢把表格做得越来越复杂，但上级检查、问责留痕、排名通报和资源倾斜让他很难停下来。一个家长也许不相信所有培训都有意义，但升学竞争、同伴压力和不确定的筛选规则会让他觉得退出更危险。稳定的权力结构会把个人意愿压进一条看似合理、实际逼仄的轨道。更关键的是，这条轨道往往会让参与者彼此强化。家长看见别的孩子都在补课，就更难相信自己可以退出；员工看见同事都在加班，就更难准点离开；基层部门看见别的地方都在层层留痕，就更不敢简化流程。权力一旦稳定，不只由上向下压，也会在同层之间扩散，变成互相监督、互相提醒、互相比较的日常秩序。"
-        ),
-        (
-            "## 4. 改写：选择没有消失，只是价格被重排\n\n"
-            "第二个关键词是改写。很多时候，权力并不把旧选择全部删除，它只是改变每个选择的价格。说真话仍然可能，但代价变高；保持沉默不一定光荣，却显得安全；提出异议没有被逐字禁止，却会让人担心关系、审批、晋升、合同、孩子上学或家庭收入。于是选择看似还在，行动已经变了。纸面自由和现实可行之间的差距，正是权力最常工作的地方。"
-        ),
-        (
-            "例如，一个外卖骑手当然知道雨天逆行危险，也知道红灯不能闯。可当系统把超时罚款、差评、派单权重和收入预期压到他的时间表上，“安全地慢慢骑”这个选项就变得昂贵。又比如，一个职场人当然可以周末不回消息，但如果他所在的组织把“秒回”解释成负责，把沉默解释成态度不好，那么休息这件事就不再只是个人选择，而被重新标上了风险价格。权力未必总是喊“不许”，它更常说：你可以，但后果自负。"
-        ),
-        (
-            "因此，分析权力时不能只问“有没有明令禁止”。更重要的问题是：不同选择的价格是怎样被安排的，谁有能力调价，谁承担调价后的后果。一个人当然可以对不合理的任务说不，但如果说不意味着失去项目、被贴上不可靠标签、让家庭收入受损，那么“不”在现实中就变得沉重。权力的高明处在于，它让某些选择仍然存在，却把它们放到普通人够不着、扛不起的位置。这也是许多制度性困境最难被看见的原因。旁观者很容易说：你可以辞职、可以投诉、可以不买、可以换城市、可以选择另一种人生。但真正处在局面里的人知道，每一个“可以”后面都有账单：房租、社保、孩子、老人、专业资历、信用记录、关系网络和重新开始的风险。权力并不需要把所有出口封死，只要让出口足够窄、足够贵、足够不确定，多数人就会留在原来的轨道上。"
-        ),
-        (
-            "## 5. 他人行动空间：权力必须进入别人的计算\n\n"
-            "第三个关键词是他人行动空间。权力不是一个人内心觉得自己强大，也不是资源本身自动产生支配。只有当某种资源、位置或规则进入别人的行动计算，它才真正变成权力。一个人拥有很多钱，如果别人做决定时完全不需要考虑他，他的财富只是背景；一个部门掌握审批，如果申请人必须为它准备材料、排队等待、猜测口径、避免得罪，它就已经站进了别人的选择结构。"
-        ),
-        (
-            "这也是为什么本书不会把权力简单写成性格问题。一个人强势、冷酷、善辩，可能让局部关系紧张，却未必形成结构性权力。真正需要分析的是资源如何被组织起来，惩罚如何变得可预期，规则如何把少数人的偏好变成多数人的日常计算。如果没有这些机制，所谓权力很快会退回个人脾气；一旦这些机制稳定运转，个人甚至可以不说话，别人也会提前替他完成服从。"
-        ),
-        (
-            "反过来说，一个看起来温和的人也可能处在强大的权力位置上。他说话客气，流程规范，甚至真心觉得自己只是在执行制度；可只要他的签字、评分、排序、审核或解释权能决定别人能不能继续前进，他就已经参与了行动空间的改写。权力分析不应停在道德表情上，不是看谁凶、谁坏、谁像反派，而是看谁能稳定改变别人的现实条件。同样，一个看起来愤怒的人未必真的有权力。他可以抱怨、讽刺、拒绝配合，甚至在局部冲突中占到口头上风，但如果这些表达不能改变资源分配、评价标准和惩罚路径，它们就很难变成结构性的力量；声音可能很响，行动空间却没有因此变宽一寸而已。区分情绪强弱和结构位置，是理解权力的第一步。很多社会争论之所以混乱，就是因为我们太容易被声音大小吸引，而忽略了谁能真正改变规则。"
-        ),
-        (
-            "## 6. 影响不是权力：边界要划清楚\n\n"
-            "把权力定义为改写行动空间，马上会遇到一个问题：是不是所有影响都变成权力了？朋友深夜劝你换工作，老师鼓励你读一本书，家人希望你别冒险，它们都会改变你的想法。可是影响和权力之间有一道门槛。影响通常改变意见、情绪或偏好；权力则能稳定改变成本、收益、可见选项和退出代价。朋友的建议你可以不听，代价通常有限；但平台调整排序、单位决定考核、学校设置门槛、机关掌握审批，这些安排会直接改变普通人的现实路径。"
-        ),
-        (
-            "因此，本书分析权力时会看三个条件：第一，是否有稳定位置，例如组织层级、法定身份、平台规则或资源入口；第二，是否有明显不对称，弱势一方拒绝或退出的成本是否过高；第三，是否有可执行、可复制的机制，让这种改写不依赖一次情绪，而能批量、反复发生。满足这些条件时，我们谈的就不只是影响，而是支配性的结构能力。划清这条线，是为了避免把日常相互作用都说成权力，也为了让批判真正对准那些能长期左右普通人命运的安排。"
-        ),
-        (
-            "这个边界还保护了概念本身的锋利度。如果把父母一句担心、朋友一次劝说、陌生人一个眼神都说成权力，分析会变得吵闹而无用。我们真正要盯住的，是那些可以让人反复付出代价的结构：档案如何记录，评价如何分配，资源如何进入，惩罚如何传递，退出为什么困难。只有把这些机制说清楚，权力这个词才不会变成情绪标签，而会成为解释现实的工具。因此，本书后面每讨论一种权力形式，都会尽量回答几个朴素问题：它依靠什么资源，它通过什么组织执行，它怎样让人相信后果会重复出现，它如何把外部要求变成内部习惯，它有没有可见的申诉和纠错通道。如果这些问题答不上来，我们就暂时不把它称为权力结构，而只把它当作影响、偏好、冲突或偶然事件来处理。"
-        ),
-        (
-            "## 7. 中国语境：不要用性格解释结构\n\n"
-            "在中国语境中讨论这个问题，更要小心两种偷懒。第一种是把一切归为文化性格，仿佛普通人天生更愿意忍耐。第二种是只谈宏大制度，不看具体人每天怎样估算损失。更可靠的写法，是从可见处境进入：一对外来务工父母为什么要为孩子入学准备一叠证明，一个基层工作人员为什么会把大量精力花在台账和留痕，一个企业主为什么会把不确定的审批口径视为经营风险，一个平台创作者为什么会在发布前反复删改措辞。"
-        ),
-        (
-            "这些例子背后未必有某个单一恶意的人。更常见的是财政约束、组织问责、资源分配、信息不对称和风险转嫁共同形成一张网。人们在网里行动，往往不是因为他们看不见更好的选择，而是那些选择的价格已经被抬得太高。用“国民性”“人情社会”之类的大词解释，容易显得痛快，却会遮蔽真正需要拆解的机制：谁掌握入口，谁制定标准，谁承担成本，谁有申诉渠道，谁可以体面退出。"
-        ),
-        (
-            "也正因为如此，本书不会把中国语境写成一连串抽象判断。更好的写法，是把读者带到具体现场：窗口前反复补材料的人，考核前熬夜整理留痕的人，家长群里不敢沉默的人，平台规则调整后连夜修改页面的人。每个现场都要追问同一组问题：他们原本有哪些路，哪些路被变贵了，哪些路被说成不现实，哪些人有能力重新定价。这样，结构才会从口号变成可被看见的东西。这种写法也能避免另一种误区：把普通人的适应都理解为软弱。很多适应其实是理性的、辛苦的、带着责任压力的选择。问题不在于嘲笑他们为什么不反抗，而在于理解为什么反抗的代价被安排得如此之高，为什么顺从会被包装成成熟、懂事、顾全大局，为什么退出通道常常狭窄而不稳定。真正严肃的权力分析，应该让人少一点道德指责，多一点结构理解。"
-        ),
-        (
-            "## 8. 为什么要看见权力：不是控诉一切，而是理解秩序\n\n"
-            "看见权力，并不等于把世界解释成阴谋。任何共同生活都需要秩序，秩序也必然限制一部分行动空间。交通规则限制了司机随意驾驶，却扩大了所有人安全出行的可能；考试制度压缩了一些自由，却也可能提供相对可预期的筛选路径。问题不在于社会有没有权力，而在于权力怎样运作：它是否透明，是否可被质疑，是否有纠错机制，受影响的人是否能申诉，退出代价是否被压到无法承受。好的权力安排不一定让每个人都满意，但它至少应该让人知道规则从哪里来、为什么这样定、错了如何改、受损者如何表达。坏的权力安排最危险的地方，往往不是它公开地说“我就是要支配你”，而是它把支配藏进流程、指标、话术和默认选项里，让人找不到负责者，也说不清自己究竟被什么困住。看见结构，是为了让责任重新有名字，让选择重新有空间。"
-        ),
-        (
-            "本章的任务，是给后续讨论铺一块地基：权力不是单次命令，而是稳定改变行动空间；不是只在公开惩罚时存在，也在提前自我限制时显形；不是某种神秘气质，而是一套由资源、组织、规则、意义和执行机制组成的现实结构。后面的章节会继续追问：身体为什么会成为权力最早进入的地方，恐惧如何制造服从，资源怎样制造依赖，组织如何放大个人意志，信息系统又怎样决定谁被看见、谁被分类、谁被记录。每一章都不会只给定义，而要回到具体处境：一个人怎样被登记、被训练、被激励、被惩罚、被说服，又怎样在这些安排中保留一点选择。只有把这些底层结构写清楚，我们才可能真正讨论自由。"
-        ),
-        (
-            "自由在这里不是一句漂亮的结束语。它意味着一个人在真实生活中拥有可承受的选择、可理解的规则、可申诉的渠道、可退出的路径，以及在表达不同意见时不必立刻付出毁灭性代价的空间。权力会压缩这些东西，也可以在被限制、被问责、被公开讨论时反过来保护这些东西。一个社会如果只能要求普通人不断适应，却不能让权力解释自己的边界，那么所谓秩序就会慢慢变成单向承受；一个制度如果允许被影响的人提出理由、获得回应、修正错误，那么权力虽然仍在，却不必必然走向支配。真正重要的不是把权力想成远处的巨物，而是在每个具体选择里看见它怎样定价、怎样留痕、怎样要求人提前配合。本书接下来的工作，就是持续辨认这条分界线：哪些权力是在组织共同生活，哪些权力是在悄悄吞掉人的行动空间。下一章将从身体与恐惧进入，因为行动空间最先被改写的地方，往往不是观念，而是身体：谁敢站起来，谁必须低头，谁能慢慢走，谁只能加快脚步，谁在尚未受罚之前就已经把自己的姿势摆成安全的样子。"
-        ),
+        '## 1. 遇雨与误期：从历史的微小困境进入',
+        '公元前209年，大泽乡。一场大雨阻断了九百名戍卒前往渔阳的道路。',
+        '这并不是一个单纯关于气象学的故事。根据《史记·陈涉世家》的叙述，陈胜、吴广等戍卒在赴役途中遇雨，道路不通，预计已经无法在制度规定的期限内抵达目的地。而在这个微小的自然意外背后，横亘着一条极其刚性的规则：“失期，法皆斩”（误期者按律皆斩）。',
+        '在历史学的严谨视野中，我们需要指出一个事实边界：后世出土的睡虎地秦简《徭律》等材料显示，秦代关于徭役误期的实际处罚可能存在斥责、赀盾、赀甲等更复杂的层级。学界对于《史记》中“失期皆斩”是否为毫无争议的秦律事实，至今存在讨论。但在这里，我们无需化身为考据学者去还原真实的秦代刑法条文，只需凝视《史记》叙事中这群普通人所面临的关键压力和绝境。',
+        '一场自然界的大雨本身并不具备权力。但是，当降雨、泥泞的道路、帝国的文书期限、戍守的军役分配以及预期中极度严酷的惩罚交织在一起时，一张无形的巨网便将这九百名戍卒牢牢罩住。普通人原本可能拥有的行动轨迹，在这个特定的时间和空间里被彻底抹除了。他们面前的选择被残酷地重排：前进是物理上的不可能，原地等待面临着被惩罚的绝境，而反抗同样是九死一生。',
+        '在经典政治学的脉络中，学者们曾用不同的标尺去丈量这种隐秘而强大的力量。罗伯特·达尔（Robert A. Dahl）提出，权力的基本体现是 A 能让 B 去做 B 原本不会去做的事情。马克斯·韦伯（Max Weber）强调，权力是在社会关系中即便遭遇抵抗也能贯彻自身意志的可能性。',
+        '放回大泽乡的场景里，这句话其实不难懂。帝国不是只派一个人喊一句“你们去渔阳”。它先登记这些人，决定谁要离开家乡去服役；再规定他们必须去哪里、什么时候到；途中有人押送，到了地方还要被编入军役和劳役系统。我们把这整套把普通人从村庄里抽出来、送到指定地点服役的制度，称为“征发机器”。陈胜、吴广面对的权力，首先就体现在这台机器能把他们的生活路线改掉：从“在家种地、照顾家人”，改成“按期赶往渔阳，迟到就要承担严重后果”。',
+        '然而，仅仅看到单向的命令是不够的。史蒂芬·卢克斯（Steven Lukes）在其权力三维视角的论述中提醒我们，权力的深刻之处不仅在于镇压反抗，更在于它预先设定了选项的边界。戍卒们之所以陷入死局，正是因为制度早已把合法路径压缩成一条：按时抵达。下雨之后，他们理论上还有很多动作可以做：等雨停、慢慢走、原路返回、向上解释。但在惩罚预期面前，这些选项都变得危险、昂贵，甚至不可想象。所谓权力改变现实，并不是一句玄虚的话，而是说：它让有些路在纸面上还存在，在现实中却走不通。',
+        '借由这个历史切片，本书试图为现代复杂社会中的秩序，确立一个更具穿透力的基准定义：',
+        '> 权力，是稳定改写他人行动空间的能力。',
+        '在这个定义下，让我们重新打量大泽乡的雨。陈胜、吴广们面对的，绝对不仅仅是一场导致道路泥泞的自然降水。如果没有国家征发、期限文书、押送制度和惩罚预期，这场雨顶多让他们推迟行程，或是就地搭建避雨的草棚。真正将他们逼入绝境的，是制度提前规定好了每一种选择的价格：按时到达才安全，误期危险，回头危险，解释也未必有用。自然界的雨水只是偶然的触发点，真正起作用的，是那套早已把普通人的选项和代价安排好的权力。',
+        '在这里，“行动空间”绝非一句抽象的学术黑话。它确切地指向一个人在特定且具体的处境中，实际具有可行性的行动集合。它不仅囊括了形式上、字面上的所有选项，更深层地包含了每一个选项背后附带的成本、风险、收益、信息获取权、身份后果以及意义判断。',
+        '一个人在表面上“拥有选择”，绝不等于他在实质上“拥有充分的选择”。如果某一个选项所附带的代价高昂到了普通人根本无法承受的地步，那么这个选项仅仅是纸面上的幻影。权力最日常、也最高效的工作方式，往往不是粗暴地把所有的门死死锁住并派兵把守，而是不动声色地把其中的几扇门变得极其沉重，沉重到绝大多数人只能知难而退，最终走向那条被预先铺设好的通道。',
+        '## 2. 现实的重排：权力如何改变行动的基础条件',
+        '当我们把权力理解为“稳定改写行动空间”时，这一视角不仅能帮助我们识别明目张胆的压迫，还能解释现代社会中更为微妙且普遍的现象：权力的作用不仅是强硬地阻止人们去做某件事，它更能从根本上改变行动发生的条件，使得一个原本看似自愿的行为，在实质上是被结构所导向的。',
+        '最粗糙、最初级的权力形态，是直接的物理阻止或明文禁止。你想离开某个地方，但有人设立了关卡不让你通过；你想进入某个行业，但严苛的行政许可硬生生地将你挡在门外。这种权力制造了一条清晰可见的界线，明确宣告了“不许”，因此极易被察觉。',
+        '然而，更深不可测的权力，擅长于重排现实的权重。无需回到帝国的古道上寻找印证，在我们的现实生活中，类似的情形正披着现代组织的隐形斗篷时刻发生。',
+        '一个外卖骑手在暴雨中自愿选择逆行和闯红灯，并非因为他缺乏基本的交通安全意识，而是因为外卖平台冷酷的派单算法、超时的高额罚款机制以及对准点率的极致压榨，已经将“合法且安全地骑行”这个选项的成本，推高到了他一天的劳动可能颗粒无收的境地。',
+        '一个职场人自愿在周末秒回无休止的工作信息，大概率也不是因为他对枯燥的业务产生了狂热的爱好。这种“自愿”服从的深层逻辑，是权力前置性地重排了他的选择权重。心理学家斯坦利·米尔格兰姆（Stanley Milgram, 1963）的经典服从实验显示，特定权威情境会显著改变人的服从行为。而更深层的原因在于，人类具有很强的社会学习与规范内化能力，文化演化和规范心理研究也指出，人会通过模仿、从众和学习群体规范来降低不确定性（如 Chudek & Henrich, 2011; Henrich & Boyd, 1998 的相关研究所示）。需要澄清的是，这并不是说具体的政治服从来自某种固定本能，更不是粗暴的生物决定论；它只是说明，权力如果能够长期占据教育、评价和组织位置，就能借用人类的社会学习能力，把外部规则变成内在习惯。',
+        '现代社会的教育体系、漫长的单位规训、层层递进的绩效考核，正是精准捕获了这一心理机制。权力的精妙之处在于，它不需要每天拿着鞭子站在打工者背后。通过经年累月的规训，它将“听话”“顾全大局”“专业主义”等规范内化为个人的自我要求。公司的领导偏好、打分等级、续签决定权与悬在头顶的失业风险，共同构成了一个无形的力场。结构性的权力将外部的规则变成了人们内心的思想钢印，让人在面临潜在的生存压力与权威凝视时，提前替权力管理好自己，自发地关闭那些可能引发冲突的行动选项。',
+        '这就是本书反复强调的“改写”。权力并不仅仅是在外部像一堵墙一样压迫人，它还会像水一样渗透进风险的精算过程与个人的自我认知中。它不仅决定了“我能不能做”，更决定了“如果我不这么做，我将付出怎样无法承受的代价”。',
+        '## 3. 四重渗透：权力如何具体地改写选择',
+        '权力对行动空间的改写绝非单一维度的操作。从外显到内隐，它大致通过四种基本机制来实现这种深度的结构性改变。',
+        '### 改变不服从的代价：强制与威慑',
+        '强制是最容易被识别的权力形式。但在现代秩序中，强制并不意味着每时每刻都在真实地挥舞大棒。只要惩罚的威胁足够可信，强制的效果就已经达成。',
+        '在公司科层制中，领导对下属的权力并不体现为物理上的暴力。它体现为：一旦你不服从工作安排，就会面临被边缘化、绩效垫底、失去晋升机会甚至被解除劳动合同的真实风险。强制机制的核心，在于它单方面改变了“不服从”的代价。它在个人的行动空间周围拉起了一道高压电网，让某些选项虽然在物理层面上依然存在，但在现实考量中却变得极其危险。',
+        '### 改变服从的收益：激励与吸纳',
+        '权力并非总是面目可憎，它同样精通于分配资源与红利。通过奖励系统来运行，是权力更为隐蔽且高效的手段。',
+        '为什么人们会积极主动地去考取某些特定的证书、填报极其繁琐的科研项目表格，或是努力迎合某项政策导向？因为权力在这些节点上投放了体制内编制、定向补贴、城市落户积分或是职务晋升的筹码。激励机制的作用在于，它让某些愿意配合权力逻辑的行为模式变得极其划算。只要这套奖励结构的分配权被垄断，并能借此稳定地控制他人的生命轨迹，它就毫无疑问是权力运转的强力齿轮。',
+        '### 改变可选择的菜单：议程设置',
+        '有些权力既不威逼你选 A，也不利诱你选 B，它的高明之处在于：它从一开始就决定了，你的世界里只有 A 和 B 可以选。',
+        '这正是权力超越可见冲突的关键所在。当你打开一个数字化办事平台申请某项资质时，你只能在下拉菜单的几个固定选项中做出选择；如果不勾选“同意用户协议”，你就无法使用任何基础的数字服务；在孩子办理入学时，家长只能严格按照教育部门设定的积分指标去凑齐各类证明材料。议程设置预先规定了什么样的问题才算作问题，什么样的答案才具备合法性。在很多时候，冲突尚未萌芽，权力的过滤就已经在“点菜菜单”的印刷环节完成了。',
+        '### 改变对自身的理解：意义塑造',
+        '如果说强制限制了边界，激励铺设了轨道，议程设置提供了菜单，那么意义塑造则是权力最深邃、最难以察觉的层次——它直接改变人们对自己所处境遇的解释。',
+        '当超负荷的加班被成功包装为“狼性文化”和“奋斗者的福报”时，当无条件的服从被解释为“顾全大局”或“职场高情商”时，秩序就不再仅仅是一种依靠外部压力维持的客体，而是深深嵌入了人们的自我认知之中。此时，个体的妥协不再只是出于对惩罚的恐惧，而是开始相信这就是成熟、上进和懂事。',
+        '教育在这里扮演了极其关键的角色。教育当然可以打开世界，让人获得知识、语言和反思能力；但教育也可能在很早的时候，把一套“什么样的人才算合格”的标准压进人的身体里。一个孩子从小反复学习排队、举手、听铃声、看排名、服从老师、接受标准答案，他学到的不只是知识，也学到了一种更深的生活姿势：先看规则怎么说，先猜权威想要什么，先判断自己这样做会不会被扣分。',
+        '这就和前文提到的社会学习能力连在一起。人类本来就擅长模仿权威、学习群体规则、避开被排斥的风险。权力如果长期控制学校、考试、单位评价和社会荣誉，就能借用这种心理基础，把外部要求慢慢压成内在习惯。所谓“思想钢印”，并不是脑子里真的被打上一个印章，而是一个人在还没有遇到惩罚之前，就已经学会替惩罚系统想好了边界：哪些话不要说，哪些事不要碰，哪些不满最好咽下去，哪些选择即使法律上可以，现实中也最好别选。',
+        '这正是意义塑造最深的地方。低级的权力让人害怕，高级的权力让人计算，而更深的权力让人提前自我修剪。它不只改变你能不能做某件事，还改变你是否觉得自己有资格去想这件事。到了这一步，服从就不再表现为外部的屈服，而变成了内心深处的一种“我本来就应该这样”。',
+        '## 4. 影响与支配的边界：为何需要结构性的审视',
+        '如果将权力定义为“改写行动空间”，我们立刻会面临一个理论追问：这个定义会不会把权力的外延拉得太宽了？现代教育毫无疑问会改变人的行动空间，朋友一次不经意的深夜长谈可能会改变一个人至关重要的职业决定，亲密关系中的照料与牵绊同样在重塑我们的日常选择。如果一切皆是权力，这个概念岂不是丧失了它的批判锋芒？',
+        '我们必须明确区分“影响力”与“权力”。影响力可以改变人们的想法、情绪或偏好，但真正的权力必须能够“稳定地”改变行动空间。我们可以通过具体的场景对比，来清晰地划定这道边界：',
+        '当一位拥有百万粉丝的网红在视频里向你强烈推荐某款商品，或者一位挚友在深夜的长谈中劝你放弃某段感情时，他们确实改变了你的想法和意愿，但这是“影响”。相反，当数字平台仅仅通过调整一个排序算法，就决定了数万名商家的商品能否被消费者看见；或者老板在年底的绩效考核表中给你打出一个强制分布的“C”，这便是“权力”。',
+        '当一位老师在课堂上热情鼓励你去读某本课外书时，他是在施加影响；但当教育部门和行政机关设定一套复杂的积分入学政策，以此决定你的孩子是否有资格在这座城市就读公立学校时，这才是权力。',
+        '要跨越这道从“影响”到“权力”的门槛，通常需要满足三个核心结构性条件：',
+        '第一，必须存在稳定的结构性位置。一次偶然的交谈或路人的指责，仅仅是影响。只有当这种改写建立在持续的组织层级、法定的身份关系、深刻的资源依赖或稳固的平台规则之上时，它才具备了权力的土壤。',
+        '第二，必须存在显著的不对称性与退出成本的鸿沟。网红无法惩罚你不买他的商品，朋友也不能强制你分手，因为你拒绝他们的代价很低。而权力绝非轻微的相互影响，它是指在特定情境中，一方能够压倒性地改变另一方的成本与收益。强势的雇主对亟需薪水的打工者、手握审批权的官员对焦急的申请人、超级平台对高度依赖其流量的商家，这些关系之所以构成支配，根本原因在于弱势一方所面临的“退出成本”往往是难以承受的生计断裂。',
+        '第三，必须具备可操作的执行与复制机制。权力不是随风而逝的语言游戏。审批机关可以扣留你的执照，教育部门可以直接拒绝你的入学申请，平台可以封禁你的店铺。权力背后通常有科层制度、档案记录、成文规则、财政预算、奖惩机制甚至暴力机关作为支撑，使得这种对行动空间的改写能够跨越时间与空间，被批量、反复地执行。',
+        '将权力界定为一种结构性能力，是为了让我们把有限的分析精力，聚焦于那些真正能够系统性、长效性地左右普通人命运的制度性安排上。',
+        '## 5. 中国语境中的权力运转：从具体处境到深层结构',
+        '将这套关于权力的分析框架引入现代社会，尤其是中国语境时，我们同样需要从具体的生存处境切入。我们绝不能一上来就抛出某种抽象的“文化宿命”或“民族劣根性”判断，而是要剖析那些切切实实的资源、财政、信息与组织机制。',
+        '当一对进城务工的夫妇试图让孩子在城市的公立学校就读，却发现需要准备社保、居住证、租赁合同等多重材料，甚至最终只能无奈将孩子送回老家时，他们面对的并非某一个具体校长的恶意。横亘在他们面前的，是城乡户籍制度的隐形壁垒以及地方政府的财权与事权逻辑。这种现象背后的统治考量，是地方财政的硬约束与公共服务的高度本地化。在有限的财力和强烈的经济增长动机下，城市治理机器必须对流入人口进行筛选，将优质公共资源（教育、医疗）定向分配给能带来稳定税收、符合产业升级需求的群体。户籍与教育的捆绑，本质上是国家机器为了控制治理成本而设定的一种资源排他性分配权力。',
+        '当一个基层干部在深夜的办公室里熬夜编造一份“完美”的台账数据时，驱动他的往往也不是单纯的“形式主义”偏好。如果我们看见他所处的结构：上级掌握着绝对的人事考核与财政转移支付权力，通过层层加码的指标体系向下传导压力；同时，上级悬着“一票否决”和终身问责的利剑，而基层又极度缺乏匹配的执法权与治理资源。在这种极端不对称的压力型体制下，基层干部的行动空间已经被严苛的避责逻辑彻底改写，“通过台账来应对检查，让纸面合规”成了最理性的生存策略。这并不是什么不可救药的国民性，而是信息不对称与权责严重倒挂时的制度必然。',
+        '当一个民营企业家面对模棱两可的政策法规，选择花精力去“打通关系”时，这也往往不止于个人的钻营。在审批权高度集中、法律解释存在巨大弹性空间、且随时可能面临信用甚至停业风险的市场环境中，正式的法律条文往往与真实的商业运转之间存在巨大的断层。为了弥合这种裂缝，获取关键的生存资源或许可，企业主不得不发展出“非正式协调”。这种潜规则不是简单的道德腐败，而是在僵硬制度与真实激励发生冲突时，行动者为了降低不确定性而生成的替代性秩序。',
+        '在探讨中国语境中的权力运作模式时，我们常常需要对比西方现代制度的演进。我们必须警惕一种将中国问题神秘化或特殊化的倾向。中国独特的权力组合方式，并非某种基因决定论，而是历史遗产与现代机器长期叠压、演化的结果。',
+        '不同于西方近现代在封建契约、自治传统、多元利益博弈和法理型国家建设中逐步发展出的权力制衡与法治框架，中国拥有着漫长而成熟的大一统科层制传统。这种传统的核心，是通过郡县制、选官制度和家国同构的伦理叙事，持续强化中央对地方人事、财政和信息的控制，并尽量压缩中间力量形成独立政治抗衡的空间。',
+        '进入近现代，这种深厚的科层底色遭遇了历史断裂，随后引入了西方现代国家机器的组织技术，并与中国革命时期的全能型动员模式深度融合。在很长一段历史时期内，国家通过“单位制”和公有制体系，实现了对个体生老病死等一切生存资源的全面包揽。个人一旦脱离组织，就丧失了合法的生存空间。',
+        '即便在市场化改革之后，个人获得了空前的择业与消费自由，但在深层逻辑上，权力负责的机制和模式并未发生根本逆转：官僚系统的合法性和晋升依然高度依赖“向上负责”，而核心资源的分配权（如土地审批、金融信贷、行业准入）依然牢牢掌握在国家手中。今天，随着数字治理、健康码经验和网格化管理的全面铺开，传统的科层权力借助现代算法和大数据，甚至获得了前所未有的微观穿透力。',
+        '这种权力格局，绝不是因为“我们习惯了被统治”这种轻浮的结论。它是庞大的人口规模、长期存在的财政紧约束、自上而下的组织架构、后发赶超的国家目标以及极高的政治维稳需求，共同锁定的一种制度均衡。这套机制塑造了中国极其强大的国家动员能力与基础设施建设效能，但也同时造就了普通个体在面对庞大行政机器时，极其微弱的博弈能力与高昂的退出成本。',
+        '## 6. 权力的伦理底线：我们为什么要看见结构',
+        '在此，我们必须直面一个终极的追问：如果权力无处不在，甚至连我们的自愿选择都在其计算之内，那么这种分析会不会导向一种偏执的怀疑论？',
+        '这种担忧提醒我们，绝不能将权力分析降格为廉价的道德控诉。我们必须承认，权力是塑造共同秩序的必需品。人类社会要在稀缺、冲突与不确定性中生存，就不可避免地需要对个体行动空间进行限制。严格的交通规则限制了司机随意驾驶的自由，但正是这种基于强制权力的限制，扩大了所有人安全出行的行动空间；法律以国家暴力为后盾惩罚特定行为，这恰恰是保护弱者免于遭受任意欺凌的前提。权力本身是一个中性的结构工具。',
+        '因此，真正需要我们倾注心力去分析和批判的，从来不是“一个社会有没有权力”这个伪问题，而是这套权力结构本身的透明度、问责机制与纠错能力。',
+        '一种良好的、值得辩护的权力安排，其标志并不是虚伪地宣称消灭了权力，而是让权力的运作变得清晰可见、可以被公开讨论、能够在规则框架内被限制、允许不满者支付合理的代价体面地退出，并竭尽全力让那些直接受其影响的人们拥有制度化的申诉渠道。',
+        '相反，一种具有破坏性的权力安排，其最典型的特征就是将改写他人行动空间的能力深深隐藏起来。它通过繁杂的官僚程序转移责任，让受损者找不到应当为此负责的具体主体；它通过垄断资源让人们看不见任何可行的替代选项；它甚至通过话语的霸权，让处于弱势的人们连自己为什么会陷入困境，都无法用清晰的语言准确地表达出来。',
+        '## 7. 走向深处的探索：接下来的旅程',
+        '至此，本章确立了全书推演的逻辑基石：权力，是稳定改写他人行动空间的能力。',
+        '这绝不仅仅是一场学术上的文字游戏，而是为了获得一种穿透表象的观察能力。在权力的最深处，发生的事情不仅仅是“有人强迫你去做某事”，而是整个现实世界的引力场已经被重新布置：某些原本通畅的道路被悄然收窄，某些荆棘丛生的道路被刻意拓宽；某些迎合既定逻辑的转身被慷慨奖励，而某些偏离正轨的探索则遭遇了制度性的冷遇。',
+        '在确立了这一基本准则之后，本书后续章节要承担的任务，就是像解剖标本一样，一层一层地往下拆解这套庞大的权力机器：',
+        '我们将首先回到人类最脆弱的层面，探讨身体为何会成为权力的底层入口，恐惧与安全感如何催生服从（第2章）；随后，我们将直面暴力的双刃剑性质，理解它为何既能摧毁秩序，又是政治秩序的最后担保（第3章）；在此基础上，我们将逐步剖析资源控制如何制造生存依赖（第4章），科层组织如何将个人意志放大为持久的统治机器（第5章），以及信息系统如何通过分类与记录重塑社会的可见性（第6章）。',
+        '我们不仅要理解权力是什么，更要看见它是如何被组织、被执行、被隐藏以及被正当化的。只有当我们有勇气把这些平时隐匿在日常规范背后的底层结构一一勘破并写清楚时，我们才有可能在真正意义上去讨论秩序的正当性与个体的自由。因为在本书的视域中，自由从来不是一句印在旗帜上随风飘扬的抽象口号，而是行动空间在真实生活中的实质性展开。',
     ]
+
 
 def _anchored_chapter(title: str, blocks: List[str]) -> str:
     lines = [f"# {title.strip() or '第一章'}"]

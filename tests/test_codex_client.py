@@ -134,6 +134,17 @@ class CodexClientTests(unittest.TestCase):
         self.assertEqual(response_payloads[0]["id"], "approval-1")
         self.assertEqual(response_payloads[0]["result"]["reason"], "runtime_policy")
 
+    def test_autonomous_turn_uses_writable_scratch_sandbox_without_network(self) -> None:
+        client = CodexAppServerClient(command=["/usr/bin/codex", "app-server"])
+        with mock.patch.object(client, "run_probe_turn", return_value={"ok": True, "finalText": "done"}) as run_probe:
+            result = client.run_autonomous_turn(prompt="revise in scratch", cwd="/tmp/book-scratch", timeout_seconds=7)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(run_probe.call_args.kwargs["cwd"], "/tmp/book-scratch")
+        self.assertEqual(run_probe.call_args.kwargs["thread_sandbox"], "workspace-write")
+        self.assertEqual(run_probe.call_args.kwargs["sandbox_policy"], {"type": "workspaceWrite", "networkAccess": False})
+        self.assertIn("isolated working directory", run_probe.call_args.kwargs["developer_instructions"])
+
     def test_list_skills_uses_explicit_cwd_without_global_install(self) -> None:
         fake_process = FakeProcess()
         client = CodexAppServerClient(command=["/usr/bin/codex", "app-server"], popen_factory=lambda *a, **k: fake_process)

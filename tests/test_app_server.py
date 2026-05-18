@@ -30,7 +30,9 @@ class FakeCodexClient:
         self.skills_cwds = []
         self.probe_calls = []
         self.patch_probe_calls = []
+        self.autonomous_calls = []
         self.patch_mode = "valid"
+        self.autonomous_mode = "valid"
 
     def health(self) -> dict:
         return {
@@ -74,6 +76,95 @@ class FakeCodexClient:
         approval_handler = kwargs.get("approval_handler")
         approval = approval_handler({"method": "item/fileChange/requestApproval", "params": {"fileChanges": [{"path": "chapters/ch01.md"}]}})
         return {"ok": True, "finalText": '{"ok": true}', "approvals": [{"response": approval}]}
+
+    def run_autonomous_turn(self, **kwargs):  # noqa: ANN003
+        self.autonomous_calls.append(kwargs)
+        scratch = Path(kwargs["cwd"])
+        prompt = kwargs.get("prompt", "")
+        assert scratch.exists(), "autonomous run must receive an existing scratch cwd"
+        if self.autonomous_mode == "no-change":
+            return {
+                "ok": False,
+                "threadId": "thread-autonomous",
+                "turnId": "turn-autonomous",
+                "error": "no scratch diff",
+                "finalText": "没有修改章节。",
+                "durationMs": 2,
+                "notifications": [{"method": "thread/started"}, {"method": "turn/completed"}],
+                "approvals": [],
+                "serverRequests": [],
+            }
+        if '"targetFile": "chapters/ch01_power.md"' in prompt:
+            chapter = scratch / "chapters" / "ch01_power.md"
+            if self.autonomous_mode == "anchorless":
+                chapter.write_text(
+                    "---\nchapter: 1\ntitle: \"权力是什么\"\nreview_status: \"annotated\"\n---\n\n"
+                    "# 第一章 权力是什么\n\n"
+                    "第一段正文，先把抽象术语放回普通人能看见的处境里。\n\n"
+                    "第二段正文，继续论证：权力不是远处的名词，而是会改变普通人下一步动作的稳定价格表。\n",
+                    encoding="utf-8",
+                )
+            else:
+                text = chapter.read_text(encoding="utf-8")
+                text = text.replace("第一段正文，包含一点抽象术语。", "第一段正文，先把抽象术语放回普通人能看见的处境里。")
+                text = text.replace("第二段正文，继续论证。", "第二段正文，继续论证：权力不是远处的名词，而是会改变普通人下一步动作的稳定价格表。")
+                chapter.write_text(text, encoding="utf-8")
+        else:
+            chapter = scratch / "chapters" / "ch01.md"
+            text = chapter.read_text(encoding="utf-8")
+            updated = text.replace("我站在门口，心里很乱。", "我站在门口，把信封翻到背面，指尖停在没有署名的空白处。")
+            if updated == text:
+                replacements = [
+                    "他把信封翻到背面，指尖停在没有署名的空白处：所谓权力，先不是宏大的名词，而是让一个人下一步动作变窄的力量。",
+                    "这种力量不一定开口命令，它也可能藏在窗口、表格、等待和沉默里，让人提前修改自己的选择。",
+                    "它改变的不只是说什么，还包括谁先等待、谁承担解释成本、谁把自己的不满改写成温和建议。",
+                    "所以本章继续往下走时，要把概念放回这些动作里，看秩序如何通过细小代价进入日常。",
+                    "一旦这种代价稳定重复，个人看似自由的选择就会被提前排序：安全的在前，真实的在后。",
+                    "这就是本章要保留的判断：权力不是远处的标语，而是持续改写行动空间的机制。",
+                    "在这一轮自主修订里，章节必须继续保持完整书稿密度，而不是只补一句漂亮话。",
+                    "它要把作者批注转成可读的动作，把抽象定义转成读者能立刻辨认的生活压力。",
+                    "因此，修改不是局部润色，而是成片地检查例子、过渡、概念边界和事实警戒线。",
+                    "如果某个历史说法还不能确信，就把不确定性写成边界，而不是冒充已经被证明。",
+                    "如果某个术语太硬，就先给普通人的处境，再慢慢收束成概念。",
+                    "如果某段只是在解释内心，就改成手、眼神、等待、表格、窗口和退路这些可见动作。",
+                    "如果某个中国语境例子容易变成口号，就回到户籍、基层、平台、审批和财政这些机制。",
+                    "最终目标是让读者读完这一章以后，能带着新的观察工具回到自己的日常经验里。",
+                    "这类修改也要留下可审核痕迹：哪些段落回应了批注，哪些判断进入事实登记。",
+                    "如果后续章节要同步规则，也必须跳过已经锁定或明确保护的章节。",
+                    "自主工作流可以自己安排步骤，但不能把安全边界改成模型说了算。",
+                    "真正有用的自动化，是把高质量草稿和可回滚版本记录同时交给作者。",
+                ]
+                seen = 0
+
+                def rewrite_block(match):  # noqa: ANN001
+                    nonlocal seen
+                    prefix, body = match.group(1), match.group(2)
+                    if seen >= len(replacements) or not body.strip():
+                        return match.group(0)
+                    addition = replacements[seen]
+                    seen += 1
+                    return f"{prefix}{body.rstrip()}\n\n{addition}\n"
+
+                updated = re.sub(r"(?ms)(<!--\s*mw:block\s+id=[^\s]+\s+hash=[^\n]+-->\n)(.*?)(?=\n<!--\s*mw:block|\Z)", rewrite_block, text, count=len(replacements))
+            chapter.write_text(updated, encoding="utf-8")
+        artifact_dir = scratch / ".bookai" / "autonomous"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        (artifact_dir / "run-plan.md").write_text("# fake autonomous run plan\n", encoding="utf-8")
+        (artifact_dir / "rules-delta.yaml").write_text("rules_delta: []\n", encoding="utf-8")
+        (artifact_dir / "revision-log.md").write_text("# fake revision log\n", encoding="utf-8")
+        (artifact_dir / "quality-report.json").write_text('{"ok": true}\n', encoding="utf-8")
+        approval_handler = kwargs.get("approval_handler")
+        approval = approval_handler({"method": "item/fileChange/requestApproval", "params": {"fileChanges": [{"path": "chapters/ch01_power.md"}]}}) if approval_handler else None
+        return {
+            "ok": True,
+            "threadId": "thread-autonomous",
+            "turnId": "turn-autonomous",
+            "finalText": "scratch chapter revised",
+            "durationMs": 3,
+            "notifications": [{"method": "thread/started"}, {"method": "turn/started"}, {"method": "turn/completed"}],
+            "approvals": [{"response": approval}] if approval else [],
+            "serverRequests": [],
+        }
 
     def run_patch_proposal_turn(self, **kwargs):  # noqa: ANN003
         self.patch_probe_calls.append(kwargs)
@@ -300,11 +391,15 @@ class WorkspaceModeAppServerTests(unittest.TestCase):
     def test_index_contains_powerbook_workflow_controls_and_evidence_labels(self) -> None:
         html = self.get("/")
 
+        self.assertIn("自主写作工作流", html)
         self.assertIn("Gemini 直连润色", html)
         self.assertIn("Codex 分段修订本章", html)
         self.assertIn("失败诊断", html)
         self.assertIn('data-testid="powerbook-chapter-select"', html)
+        self.assertIn('data-testid="powerbook-autonomous-button"', html)
         self.assertIn('data-testid="powerbook-codex-button"', html)
+        self.assertIn("运行计划", html)
+        self.assertIn("质量报告", html)
         self.assertIn("不生成可提交模板正文", html)
         self.assertIn("工作流证据", html)
         self.assertIn("实际调用 Gemini", html)
@@ -312,6 +407,9 @@ class WorkspaceModeAppServerTests(unittest.TestCase):
         self.assertIn("运行日志", html)
         self.assertIn("仅诊断，不可提交", html)
         self.assertIn("workflowSelectedFile", html)
+        self.assertIn("自主工作流记忆", html)
+        visible_html = re.sub(r"<(script|style)\b.*?</\1>", "", html, flags=re.S)
+        self.assertNotIn("scratch", visible_html)
 
     def test_index_script_has_separate_existing_project_list_state(self) -> None:
         html = self.get("/")
@@ -364,10 +462,110 @@ class WorkspaceModeAppServerTests(unittest.TestCase):
         self.assertGreaterEqual(chapter["wordCount"], 6000)
         self.assertGreaterEqual(len(chapter["blocks"]), 20)
         chapter_text = (project_root / "chapters" / "ch01.md").read_text(encoding="utf-8")
-        self.assertIn("# 第一章 权力是什么", chapter_text)
+        self.assertIn("# 第一章 被改写的选择：权力从哪里开始", chapter_text)
         self.assertGreaterEqual(chapter_text.count("\n## "), 5)
         self.assertIn("权力，是稳定改写他人行动空间的能力", chapter_text)
         self.assertNotIn("工作流说明", chapter["blocks"]["ch01-p001"]["text"])
+        self.assertGreaterEqual(len(list((project_root / "chapters").glob("*.md"))), 34)
+        self.assertTrue((project_root / "chapters" / "ch02_body_fear_obedience.md").exists())
+        self.assertGreaterEqual(opened["project"]["powerbookWorkflow"]["statusCounts"].get("revised", 0), 1)
+
+    def test_autonomous_workflow_endpoint_uses_scratch_and_runtime_patch(self) -> None:
+        created = self.post(
+            "/api/projects/create",
+            {
+                "title": "自主测试书",
+                "slug": "autonomous-guide-book",
+                "mode": "powerbook-guide",
+                "premise": "用 PowerBook 式自主工作流写一本解释权力的书。",
+                "openingText": "用 PowerBook 式自主工作流写一本解释权力的书。",
+            },
+        )
+        project_root = Path(created["root"])
+        self.post("/api/projects/open", {"relativePath": "autonomous-guide-book"})
+        before_text = (project_root / "chapters" / "ch01.md").read_text(encoding="utf-8")
+        before_count = git_count(project_root)
+
+        result = self.post(
+            "/api/workflows/autonomous/start",
+            {"file": "chapters/ch01.md", "timeoutSeconds": 1, "goal": "把直接心理改成动作。"},
+        )
+        patch = result["output"]
+        preview = self.post("/api/workflows/autonomous/preview", {"runId": result["runId"]})
+        status = self.post("/api/workflows/autonomous/status", {"runId": result["runId"]})
+        artifacts = self.post("/api/workflows/autonomous/artifacts", {"runId": result["runId"], "includeText": True})
+
+        self.assertEqual(result["source"], "autonomous-codex-scratch")
+        self.assertEqual(result["workflow"]["source"], "autonomous-codex-scratch")
+        self.assertEqual(patch["sourceAnnotations"], ["USER-powerbook-gemini-workflow", "USER-autonomous-workflow"])
+        self.assertTrue(preview["validation"]["valid"], preview)
+        self.assertTrue(status["hasPatch"], status)
+        self.assertIn("把信封翻到背面", preview["diff"])
+        self.assertEqual((project_root / "chapters" / "ch01.md").read_text(encoding="utf-8"), before_text)
+        self.assertTrue((project_root / ".bookai" / "runs" / result["runId"] / "scratch" / "chapters" / "ch01.md").exists())
+        artifact_paths = {item["path"] for item in artifacts["artifacts"]}
+        self.assertTrue(any(path.endswith("patch-proposal.json") for path in artifact_paths), artifact_paths)
+        self.assertTrue(any(path.endswith("scratch-run-plan.md") for path in artifact_paths), artifact_paths)
+        prompt_text = next(item["text"] for item in artifacts["artifacts"] if item["path"].endswith("prompt.md"))
+        self.assertIn("workflowMemory", prompt_text)
+        self.assertIn("initialPrompt", prompt_text)
+        self.assertIn(".bookai/runs/", (project_root / ".git" / "info" / "exclude").read_text(encoding="utf-8"))
+
+        accepted = self.post("/api/workflows/autonomous/accept", {"runId": result["runId"]})
+        self.assertTrue(accepted["applied"], accepted)
+        self.assertIn("把信封翻到背面", (project_root / "chapters" / "ch01.md").read_text(encoding="utf-8"))
+        self.assertEqual(git_count(project_root), before_count + 1)
+        self.assertEqual(git_status_short(project_root), "")
+
+    def test_autonomous_workflow_maps_anchorless_scratch_markdown(self) -> None:
+        source = write_minimal_powerbook(self.workspace / "PowerBook-source")
+        project_root = Path(import_powerbook_project(source, self.workspace, slug="powerbook-anchorless")["root"])
+        self.post("/api/projects/open", {"relativePath": "powerbook-anchorless"})
+        self.server.app.codex_client.autonomous_mode = "anchorless"
+        before_text = (project_root / "chapters" / "ch01_power.md").read_text(encoding="utf-8")
+
+        result = self.post(
+            "/api/workflows/autonomous/start",
+            {"file": "chapters/ch01_power.md", "timeoutSeconds": 1},
+        )
+        preview = self.post("/api/patch/preview", {"patch": result["output"]})
+
+        self.assertEqual(result["source"], "autonomous-codex-scratch")
+        self.assertEqual(result["output"]["sourceAnnotations"], ["USER-powerbook-gemini-workflow", "USER-autonomous-workflow"])
+        self.assertTrue(preview["validation"]["valid"], preview)
+        self.assertIn("普通人能看见的处境", preview["diff"])
+        self.assertEqual((project_root / "chapters" / "ch01_power.md").read_text(encoding="utf-8"), before_text)
+
+    def test_autonomous_workflow_diagnostic_is_not_applicable_when_no_diff(self) -> None:
+        created = self.post(
+            "/api/projects/create",
+            {
+                "title": "诊断测试书",
+                "slug": "autonomous-diagnostic-book",
+                "mode": "powerbook-guide",
+                "openingText": "测试自主工作流失败诊断。",
+            },
+        )
+        project_root = Path(created["root"])
+        self.post("/api/projects/open", {"relativePath": "autonomous-diagnostic-book"})
+        self.server.app.codex_client.autonomous_mode = "no-change"
+        before_text = (project_root / "chapters" / "ch01.md").read_text(encoding="utf-8")
+
+        result = self.post(
+            "/api/workflows/autonomous/start",
+            {"file": "chapters/ch01.md", "timeoutSeconds": 1},
+        )
+        preview = self.post("/api/workflows/autonomous/preview", {"runId": result["runId"]})
+        patch_by_run = self.post("/api/workflows/autonomous/artifacts", {"runId": result["runId"]})
+
+        self.assertEqual(result["source"], "autonomous-workflow-diagnostic")
+        self.assertTrue(result["workflow"]["diagnosticOnly"])
+        self.assertTrue(result["output"]["safety"]["acceptDisabled"])
+        self.assertEqual(result["output"]["changes"], [])
+        self.assertFalse(preview["validation"]["valid"], preview)
+        self.assertTrue(any(issue["code"] == "empty_changes" for issue in preview["validation"]["issues"]), preview)
+        self.assertTrue(any(item["path"].endswith("diagnostic-patch-proposal.json") for item in patch_by_run["artifacts"]))
+        self.assertEqual((project_root / "chapters" / "ch01.md").read_text(encoding="utf-8"), before_text)
 
     def test_create_discussion_writes_sidecar_and_not_chapter(self) -> None:
         created = self.post(

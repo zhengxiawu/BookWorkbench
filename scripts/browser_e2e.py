@@ -21,6 +21,7 @@ from book_workbench.powerbook_importer import import_powerbook_project
 class FakeCodexClient:
     def __init__(self) -> None:
         self.patch_calls = 0
+        self.autonomous_calls = 0
 
     def health(self) -> dict:
         return {"ok": True, "command": ["智能服务", "本地服务"], "error": None, "notifications": [], "durationMs": 1}
@@ -44,6 +45,38 @@ class FakeCodexClient:
                     }
                 ]
             },
+        }
+
+    def run_autonomous_turn(self, **kwargs):  # noqa: ANN003
+        self.autonomous_calls += 1
+        scratch = Path(kwargs["cwd"])
+        prompt = kwargs.get("prompt", "")
+        assert scratch.exists(), "autonomous workflow must receive an isolated cwd"
+        chapter = scratch / "chapters" / ("ch01_power.md" if "chapters/ch01_power.md" in prompt else "ch01.md")
+        text = chapter.read_text(encoding="utf-8")
+        if "ch01_power.md" in chapter.name:
+            text = text.replace("第一段正文，包含一点抽象术语。", "第一段正文，先把抽象术语放回普通人能看见的处境里。")
+            text = text.replace("第二段正文，继续论证。", "第二段正文，继续论证：权力不是远处的名词，而是会改变普通人下一步动作的稳定价格表。")
+        else:
+            text = text.replace("我站在门口，心里很乱。", "我站在门口，把信封翻到背面，指尖停在没有署名的空白处。")
+        chapter.write_text(text, encoding="utf-8")
+        artifact_dir = scratch / ".bookai" / "autonomous"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        (artifact_dir / "run-plan.md").write_text("# browser e2e autonomous plan\n", encoding="utf-8")
+        (artifact_dir / "rules-delta.yaml").write_text("rules_delta: []\n", encoding="utf-8")
+        (artifact_dir / "revision-log.md").write_text("# browser e2e revision log\n", encoding="utf-8")
+        (artifact_dir / "quality-report.json").write_text('{"ok": true}\n', encoding="utf-8")
+        approval_handler = kwargs.get("approval_handler")
+        approval = approval_handler({"method": "item/fileChange/requestApproval", "params": {"fileChanges": [{"path": chapter.relative_to(scratch).as_posix()}]}}) if approval_handler else None
+        return {
+            "ok": True,
+            "threadId": "thread-e2e-autonomous",
+            "turnId": "turn-e2e-autonomous",
+            "finalText": "scratch chapter revised",
+            "durationMs": 3,
+            "notifications": [{"method": "thread/started"}, {"method": "turn/started"}, {"method": "turn/completed"}],
+            "approvals": [{"response": approval}] if approval else [],
+            "serverRequests": [],
         }
 
     def run_patch_proposal_turn(self, **kwargs):  # noqa: ANN003
@@ -150,6 +183,7 @@ def main() -> int:
     console_messages: list[dict[str, str]] = []
     page_errors: list[str] = []
     workflow_requests: list[str] = []
+    autonomous_requests: list[str] = []
     flow_report: dict[str, object] = {"computerUseToolAvailable": False, "harness": "Playwright browser actions"}
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -179,6 +213,12 @@ def main() -> int:
                     "request",
                     lambda req: workflow_requests.append(req.url)
                     if "/api/workflows/powerbook/gemini-chapter" in req.url
+                    else None,
+                )
+                page.on(
+                    "request",
+                    lambda req: autonomous_requests.append(req.url)
+                    if "/api/workflows/autonomous/start" in req.url
                     else None,
                 )
                 page.goto(base_url, wait_until="networkidle")
@@ -358,19 +398,18 @@ def main() -> int:
                 page.evaluate("() => window.BookWorkbench.openProject('powerbook-test')")
                 page.wait_for_function("() => window.BookWorkbench.state?.project?.summary?.slug === 'powerbook-test'")
                 expect(page.get_by_test_id("powerbook-workflow-card")).to_be_visible(timeout=5000)
-                # Keep browser E2E deterministic while still exercising the
-                # visible workflow button: the UI click must POST to the
-                # trusted endpoint and then enter Diff Review.
-                requests_before_workflow = len(workflow_requests)
-                page.get_by_test_id("powerbook-codex-button").click()
+                # Primary PowerBook route: autonomous Codex works inside a
+                # isolated copy; only the converted proposal reaches Diff
+                # Review and later safe apply.
+                requests_before_autonomous = len(autonomous_requests)
+                page.get_by_test_id("powerbook-autonomous-button").click()
                 expect(page.locator("#view-diff")).to_be_visible(timeout=5000)
                 expect(page.locator("#patchValidity")).to_contain_text("通过", timeout=5000)
-                page.wait_for_function("() => window.BookWorkbench.state?.lastPatch?.workflow?.chunked === true")
-                page.wait_for_function("() => window.BookWorkbench.state?.lastPatch?.workflow?.source === 'codex-app-server'")
-                assert len(workflow_requests) > requests_before_workflow, "PowerBook workflow button must call /api/workflows/powerbook/gemini-chapter"
-                expect(page.locator("#workflowEvidence")).to_contain_text("gemini-3.1-pro-preview", timeout=5000)
-                expect(page.locator("#workflowEvidence")).to_contain_text("scripts/polish_chapters_gemini.py", timeout=5000)
-                expect(page.locator("#workflowEvidence")).to_contain_text("实际调用 Gemini", timeout=5000)
+                page.wait_for_function("() => window.BookWorkbench.state?.lastPatch?.workflow?.source === 'autonomous-codex-scratch'")
+                assert len(autonomous_requests) > requests_before_autonomous, "Autonomous workflow button must call /api/workflows/autonomous/start"
+                expect(page.locator("#workflowEvidence")).to_contain_text("自主", timeout=5000)
+                expect(page.locator("#workflowEvidence")).to_contain_text("隔离副本", timeout=5000)
+                expect(page.locator("#workflowEvidence")).to_contain_text("质量报告", timeout=5000)
                 power_before = (power_project / "chapters" / "ch01_power.md").read_text(encoding="utf-8")
                 assert "普通人能看见的处境" not in power_before
                 power_before_commits = git_count(power_project)
@@ -403,6 +442,7 @@ def main() -> int:
                             "commitCountBefore": power_before_commits,
                             "commitCountAfter": power_after_commits,
                             "workflowEndpointRequests": len(workflow_requests),
+                            "autonomousEndpointRequests": len(autonomous_requests),
                         },
                     }
                 )

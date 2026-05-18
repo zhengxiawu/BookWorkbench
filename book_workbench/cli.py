@@ -9,6 +9,7 @@ import sys
 from .annotation_engine import annotation_to_dict, classification_summary, list_annotations
 from .app_server import serve
 from .audit import AuditLog
+from .autonomous_workflow import run_autonomous_workflow
 from .codex_client import CodexAppServerClient
 from .codex_skill_eval import run_codex_skill_evals
 from .patch_engine import load_patch, make_annotation_patch, validate_patch as validate_patch_proposal
@@ -197,6 +198,22 @@ def cmd_codex_skill_eval(args: argparse.Namespace) -> int:
     return 0 if result.get("ok") else 1
 
 
+def cmd_autonomous_workflow(args: argparse.Namespace) -> int:
+    runtime = RuntimeOrchestrator(args.project)
+    command = args.command if args.command else ["codex", "app-server"]
+    client = CodexAppServerClient(command=command, timeout_seconds=args.timeout, cwd=args.project)
+    result = run_autonomous_workflow(
+        runtime=runtime,
+        codex_client=client,
+        file_path=args.file,
+        goal=args.goal or "",
+        mode=args.mode,
+        timeout_seconds=args.timeout,
+    )
+    print_json(result)
+    return 0 if result.get("source") != "autonomous-workflow-diagnostic" else 1
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     if args.project is None and args.workspace is None:
         parser_workspace_error = "serve requires --workspace for empty workspace mode or --project for direct project mode"
@@ -369,6 +386,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override command, default: codex app-server",
     )
     codex_skill_eval.set_defaults(func=cmd_codex_skill_eval)
+
+    autonomous = sub.add_parser("autonomous-workflow", help="Run autonomous isolated-copy writing workflow and return a Runtime-validated proposal")
+    autonomous.add_argument("--project", required=True)
+    autonomous.add_argument("--file", required=True, help="Target chapter path under chapters/")
+    autonomous.add_argument("--goal", default="", help="Writing/revision goal for this run")
+    autonomous.add_argument("--mode", default="chapter-revision")
+    autonomous.add_argument("--timeout", type=float, default=180.0)
+    autonomous.add_argument(
+        "--command",
+        nargs=argparse.REMAINDER,
+        help="Override command, default: codex app-server",
+    )
+    autonomous.set_defaults(func=cmd_autonomous_workflow)
 
     serve_cmd = sub.add_parser("serve", help="Start the local browser app")
     serve_cmd.add_argument("--project", help="Open this project immediately; omit for empty workspace mode")
